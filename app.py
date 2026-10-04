@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 import barcode
 import bcrypt
 from barcode.writer import SVGWriter
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from jose import JWTError, jwt
@@ -41,7 +41,7 @@ from svglib.svglib import svg2rlg
 # ==========================================
 SECRET_KEY = os.getenv("SECRET_KEY", "labelforge_commercial_secret_2026_x995")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days token expiry
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@lableforge.com")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Chopraji995#")
@@ -58,7 +58,6 @@ PAYMENT_CONFIG = {
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./labelforge.db")
 
-# PostgreSQL fix: modern SQLAlchemy requires 'postgresql://' instead of legacy 'postgres://'
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -112,7 +111,7 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     phone = Column(String(30), default="")
-    role = Column(String(20), default="member")
+    role = Column(String(20), default="owner")
     is_suspended = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -158,7 +157,7 @@ Base.metadata.create_all(bind=engine)
 
 def auto_migrate_schema():
     if "sqlite" not in DATABASE_URL:
-        return  # In Postgres, use proper Alembic migrations or create_all
+        return
     with engine.connect() as conn:
         try:
             res = conn.execute(text("PRAGMA table_info(businesses)"))
@@ -170,6 +169,7 @@ def auto_migrate_schema():
             conn.commit()
         except Exception as e:
             print(f"[Migration Notice] {e}")
+
 
 auto_migrate_schema()
 
@@ -284,13 +284,14 @@ class BarcodeEngine:
         return f"{fallback}{cls.calc_ean13_check(fallback)}"
 
     @classmethod
-    def generate_svg(cls, symbology: str, value: str, write_text: bool = True) -> str:
+    def generate_svg(cls, symbology: str, value: str, write_text: bool = True, base_url: str = "") -> str:
         symbology = (symbology or "ean13").lower().strip()
         clean = (value or "").strip()
 
         if symbology in ("qrcode", "qr"):
+            qr_content = f"{base_url.rstrip('/')}/verify/{clean}" if base_url else clean
             qr = qrcode.QRCode(box_size=8, border=2)
-            qr.add_data(clean or "000000000000")
+            qr.add_data(qr_content or "000000000000")
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
             buf = io.BytesIO()
@@ -315,38 +316,27 @@ class BarcodeEngine:
 
         bc.write(buf, options={
             "write_text": write_text,
-            "quiet_zone": 4.0,
-            "module_width": 0.30,
-            "module_height": 13.0,
+            "quiet_zone": 2.5,
+            "module_width": 0.25,
+            "module_height": 10.0,
             "font_size": 9,
-            "text_distance": 3.0
+            "text_distance": 2.5
         })
         raw_svg = buf.getvalue().decode('utf-8')
 
-        w_match = re.search(r'width="([0-9\.]+)(mm|pt|px)?"', raw_svg)
-        h_match = re.search(r'height="([0-9\.]+)(mm|pt|px)?"', raw_svg)
-
-        if w_match and h_match and 'viewBox' not in raw_svg:
-            w_val = float(w_match.group(1))
-            h_val = float(h_match.group(1))
+        # Add responsive attributes without distorting the internal coordinate grid
+        if 'preserveAspectRatio' not in raw_svg:
             raw_svg = re.sub(
                 r'<svg\b([^>]*)>',
-                rf'<svg\1 viewBox="0 0 {w_val} {h_val}" preserveAspectRatio="xMidYMid meet" width="100%" height="100%" style="display:block; margin:auto;">',
+                r'<svg\1 preserveAspectRatio="xMidYMid meet" style="display:block; margin:auto; max-width:100%; max-height:100%;">',
                 raw_svg,
                 count=1
             )
-        else:
-            raw_svg = re.sub(r'<svg\b([^>]*)>',
-                             r'<svg\1 preserveAspectRatio="xMidYMid meet" width="100%" height="100%" style="display:block; margin:auto;">',
-                             raw_svg, count=1)
-
         return raw_svg
-
-
 # ==========================================
 # 4. REST APIS & FASTAPI
 # ==========================================
-app = FastAPI(title="LabelForge Pro Engine", version="8.8.6")
+app = FastAPI(title="LabelForge Pro Engine", version="8.9.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -498,6 +488,77 @@ def public_barcode_lookup(barcode_num: str, db: Session = Depends(get_db)):
     }
 
 
+# Standalone Public Verification Page for Mobile Camera Scans
+@app.get("/verify/{barcode_num}", response_class=HTMLResponse)
+def verify_product_page(barcode_num: str, db: Session = Depends(get_db)):
+    clean_code = re.sub(r'[\s-]', '', barcode_num.strip())
+    prod = db.query(Product).filter(Product.barcode == clean_code).first()
+    if not prod and len(clean_code) in (12, 13):
+        prod = db.query(Product).filter(Product.barcode.startswith(clean_code[:12])).first()
+
+    if not prod:
+        return HTMLResponse(content=f"""
+        <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Verification Failed</title><script src="https://cdn.tailwindcss.com"></script></head>
+        <body class="bg-slate-50 min-h-screen flex items-center justify-center p-4">
+          <div class="bg-white max-w-sm w-full p-8 rounded-3xl shadow-xl text-center border border-rose-200">
+            <div class="w-16 h-16 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto text-2xl mb-4 font-bold">✕</div>
+            <h1 class="text-xl font-extrabold text-slate-900">Unverified Barcode</h1>
+            <p class="text-xs text-slate-500 mt-2 font-mono">{clean_code}</p>
+            <p class="text-xs text-slate-600 mt-4 leading-relaxed">This item was not found in the verified LabelForge registry.</p>
+          </div>
+        </body></html>
+        """, status_code=404)
+
+    biz_name = prod.business.name if prod.business else "Verified Brand"
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Verified Product — {prod.name}</title>
+      <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-slate-50 min-h-screen flex items-center justify-center p-4">
+      <div class="bg-white max-w-md w-full p-8 rounded-3xl shadow-2xl border border-slate-200 space-y-6">
+        <div class="flex items-center justify-between pb-4 border-b border-slate-100">
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 text-xs font-bold rounded-full">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Authentic Product
+          </span>
+          <span class="text-xs font-bold text-slate-400 font-mono">GS1 Verified</span>
+        </div>
+        <div>
+          <span class="text-[11px] font-bold text-slate-400 uppercase tracking-widest block">{biz_name}</span>
+          <h1 class="text-2xl font-extrabold text-slate-900 mt-1">{prod.name}</h1>
+          <div class="text-3xl font-black text-indigo-600 mt-3">₹{prod.mrp:.2f}</div>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-xs">
+          <div class="p-3 bg-slate-50 rounded-2xl border border-slate-100">
+            <span class="text-slate-400 block font-semibold text-[10px]">SKU CODE</span>
+            <span class="font-mono font-bold text-slate-800 text-sm">{prod.sku}</span>
+          </div>
+          <div class="p-3 bg-slate-50 rounded-2xl border border-slate-100">
+            <span class="text-slate-400 block font-semibold text-[10px]">CATEGORY</span>
+            <span class="font-bold text-slate-800 text-sm">{prod.category}</span>
+          </div>
+          <div class="p-3 bg-slate-50 rounded-2xl border border-slate-100">
+            <span class="text-slate-400 block font-semibold text-[10px]">BATCH</span>
+            <span class="font-mono font-bold text-slate-800 text-sm">{prod.batch_number or "B-REG"}</span>
+          </div>
+          <div class="p-3 bg-slate-50 rounded-2xl border border-slate-100">
+            <span class="text-slate-400 block font-semibold text-[10px]">BARCODE</span>
+            <span class="font-mono font-bold text-slate-800 text-xs">{prod.barcode}</span>
+          </div>
+        </div>
+        <div class="text-center pt-2">
+          <span class="text-[10px] text-slate-400 font-medium">Secured by LabelForge GS1 Infrastructure</span>
+        </div>
+      </div>
+    </body>
+    </html>
+    """)
+
+
 @app.get("/api/config/payment")
 def get_payment_details(amount: float = 799.0):
     amount_str = f"{amount:.2f}"
@@ -554,8 +615,13 @@ def register(data: RegisterSchema, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == clean_email).first():
         raise HTTPException(status_code=400, detail="Account with this email already exists")
 
-    biz = Business(name=data.business_name, phone=data.phone or "", plan=data.plan or "free", sku_prefix="PRD",
-                   sku_padding=6)
+    biz = Business(
+        name=data.business_name.strip() or "My Retail Store",
+        phone=data.phone or "",
+        plan=data.plan or "free",
+        sku_prefix="PRD",
+        sku_padding=6
+    )
     db.add(biz)
     db.commit()
     db.refresh(biz)
@@ -566,7 +632,7 @@ def register(data: RegisterSchema, db: Session = Depends(get_db)):
 
     user = User(
         business_id=biz.id,
-        full_name=data.full_name,
+        full_name=data.full_name.strip(),
         email=clean_email,
         phone=data.phone or "",
         hashed_password=hash_password(data.password),
@@ -647,8 +713,8 @@ def get_current_user_profile(user: User = Depends(get_current_user)):
 
 @app.get("/api/admin/overview")
 def admin_get_overview(admin: User = Depends(require_superadmin), db: Session = Depends(get_db)):
-    all_users = db.query(User).all()
-    all_businesses = db.query(Business).all()
+    all_users = db.query(User).order_by(User.created_at.desc()).all()
+    all_businesses = db.query(Business).order_by(Business.created_at.desc()).all()
     all_products = db.query(Product).all()
 
     plan_counts = {"free": 0, "business": 0, "professional": 0, "lifetime_unlimited": 0}
@@ -668,21 +734,25 @@ def admin_get_overview(admin: User = Depends(require_superadmin), db: Session = 
 
     customers_list = []
     for b in all_businesses:
-        owner = next((u for u in b.users if u.role in ("owner", "superadmin")), b.users[0] if b.users else None)
+        primary_user = next((u for u in b.users if u.role in ("owner", "superadmin")), None)
+        if not primary_user and b.users:
+            primary_user = b.users[0]
+
         prod_count = len(b.products)
         customers_list.append({
             "business_id": b.id,
-            "business_name": b.name,
-            "plan": b.plan,
+            "business_name": b.name or "Untitled Business",
+            "plan": b.plan or "free",
             "created_at": b.created_at.strftime("%Y-%m-%d"),
-            "owner_id": owner.id if owner else None,
-            "owner_name": owner.full_name if owner else "N/A",
-            "owner_email": owner.email if owner else "N/A",
-            "is_suspended": owner.is_suspended if owner else False,
+            "owner_id": primary_user.id if primary_user else None,
+            "owner_name": primary_user.full_name if primary_user else "Registered User",
+            "owner_email": primary_user.email if primary_user else "N/A",
+            "is_suspended": primary_user.is_suspended if primary_user else False,
             "products_count": prod_count
         })
 
-    mrr = (plan_counts.get("business", 0) * int(pricing_config["business_price"])) + (plan_counts.get("professional", 0) * int(pricing_config["professional_price"]))
+    mrr = (plan_counts.get("business", 0) * int(pricing_config["business_price"])) + (
+                plan_counts.get("professional", 0) * int(pricing_config["professional_price"]))
 
     return {
         "stats": {
@@ -874,9 +944,10 @@ def change_user_password(data: ChangePasswordSchema, user: User = Depends(get_cu
 
 
 @app.api_route("/api/barcodes/render", methods=["GET", "POST"])
-def render_barcode(symbology: str = "ean13", value: str = "", text: bool = True):
+def render_barcode(request: Request, symbology: str = "ean13", value: str = "", text: bool = True):
     try:
-        svg_str = BarcodeEngine.generate_svg(symbology, value, text)
+        base_url = str(request.base_url)
+        svg_str = BarcodeEngine.generate_svg(symbology, value, text, base_url=base_url)
         return Response(content=svg_str, media_type="image/svg+xml")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -908,16 +979,16 @@ def export_pdf_sheet(req: SheetPdfRequest, user: User = Depends(get_current_user
             try:
                 svg_buf = io.BytesIO(itm["svg"].encode('utf-8'))
                 draw = svg2rlg(svg_buf)
-                if draw:
-                    sx = (lw - (4 * mm)) / draw.width
-                    sy = (lh - (4 * mm)) / draw.height
-                    sc = min(sx, sy)
+                if draw and draw.width > 0 and draw.height > 0:
+                    avail_w = lw - (6 * mm)
+                    avail_h = lh - (6 * mm)
+                    sc = min(avail_w / draw.width, avail_h / draw.height, 1.0)
                     draw.scale(sc, sc)
-                    ox = (lw - (draw.width * sc)) / 2
-                    oy = (lh - (draw.height * sc)) / 2
+                    ox = (lw - (draw.width * sc)) / 2.0
+                    oy = (lh - (draw.height * sc)) / 2.0
                     renderPDF.draw(draw, c, ox, oy)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Barcode PDF Error] {e}")
         c.save()
         return Response(content=buf.getvalue(), media_type="application/pdf",
                         headers={"Content-Disposition": "attachment; filename=barcode_single.pdf"})
@@ -958,16 +1029,17 @@ def export_pdf_sheet(req: SheetPdfRequest, user: User = Depends(get_current_user
             try:
                 svg_buf = io.BytesIO(itm["svg"].encode('utf-8'))
                 draw = svg2rlg(svg_buf)
-                if draw:
-                    max_w = lw - (6 * mm)
-                    max_h = max(6 * mm, top_cursor - (2 * mm))
-                    sc = min(max_w / draw.width, max_h / draw.height)
+                if draw and draw.width > 0 and draw.height > 0:
+                    avail_w = lw - (8 * mm)
+                    avail_h = max(10 * mm, top_cursor - (3 * mm))
+                    sc = min(avail_w / draw.width, avail_h / draw.height, 1.0)
                     draw.scale(sc, sc)
-                    ox = (lw - (draw.width * sc)) / 2
-                    renderPDF.draw(draw, c, ox, 2 * mm)
-            except Exception:
-                pass
-
+                    # Center horizontally within the label width
+                    ox = (lw - (draw.width * sc)) / 2.0
+                    oy = 3 * mm + ((avail_h - (draw.height * sc)) / 2.0)
+                    renderPDF.draw(draw, c, ox, oy)
+            except Exception as e:
+                print(f"[PDF Draw Error] {e}")
         c.save()
         return Response(content=buf.getvalue(), media_type="application/pdf",
                         headers={"Content-Disposition": "attachment; filename=single_label.pdf"})
@@ -1102,6 +1174,26 @@ SPA_HTML = """<!DOCTYPE html>
   <div id="errorBoundary" class="hidden p-4 bg-rose-50 text-rose-800 border-b border-rose-200 text-xs font-mono font-bold"></div>
   <div id="appRoot"></div>
 
+  <!-- ADD CATEGORY QUICK POPUP MODAL -->
+  <div id="quickCategoryModal" class="hidden fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl border border-slate-200">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+        <h3 class="font-bold text-slate-900 text-sm">Add New Category</h3>
+        <button onclick="closeQuickCategoryModal()" class="text-slate-400 hover:text-slate-600 text-xl font-bold">&times;</button>
+      </div>
+      <form onsubmit="handleQuickAddCategory(event)" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Category Name</label>
+          <input id="quickCategoryInput" type="text" required placeholder="e.g. Traditional Wear, Footwear" class="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+        </div>
+        <div class="pt-2 flex justify-end gap-2">
+          <button type="button" onclick="closeQuickCategoryModal()" class="px-4 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50">Cancel</button>
+          <button type="submit" class="px-5 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700">Add Category</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- EDIT PRODUCT MODAL -->
   <div id="editProductModal" class="hidden fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl border border-slate-200">
@@ -1137,6 +1229,45 @@ SPA_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+  
+  // ==========================================
+    // HARDWARE BARCODE SCANNER LISTENER (HID)
+    // ==========================================
+    let barcodeBuffer = '';
+    let lastKeyTime = 0;
+
+    window.addEventListener('keydown', (e) => {
+      // Only capture automated hardware scans if on the 'scanner' page
+      if (state.view !== 'scanner') return;
+
+      const currentTime = new Date().getTime();
+      const timeDiff = currentTime - lastKeyTime;
+      lastKeyTime = currentTime;
+
+      // Handle the 'Enter' suffix transmitted by the scanner
+      if (e.key === 'Enter') {
+        if (barcodeBuffer.length >= 8) {
+          e.preventDefault();
+          state.scannerInput = barcodeBuffer.trim();
+          barcodeBuffer = '';
+          const inputEl = document.getElementById('scanInput');
+          if (inputEl) inputEl.value = state.scannerInput;
+          performScanLookup();
+        }
+        return;
+      }
+
+      // Barcode scanners type keystrokes in under 40 milliseconds
+      if (timeDiff < 50) {
+        if (e.key.length === 1) {
+          barcodeBuffer += e.key;
+        }
+      } else {
+        // Reset buffer if standard slow human typing
+        barcodeBuffer = e.key.length === 1 ? e.key : '';
+      }
+    });
+  
     window.onerror = function(msg, url, line) {
       const errBox = document.getElementById('errorBoundary');
       if (errBox) {
@@ -1150,10 +1281,12 @@ SPA_HTML = """<!DOCTYPE html>
 
     let state = {
       view: 'landing',
+      navHistory: [],
       token: null,
       user: null,
       authMode: 'login',
       authData: { full_name: '', email: '', phone: '', password: '', business_name: '', plan: 'free' },
+      addProductDraft: { name: '', mrp: '', category: 'General' },
       products: [],
       categories: ["General", "Apparel", "Footwear", "Electronics", "Cosmetics", "FMCG"],
       paymentData: null,
@@ -1196,7 +1329,10 @@ SPA_HTML = """<!DOCTYPE html>
       }
     }
 
-    function navigate(viewName) {
+    function navigate(viewName, isBackAction = false) {
+      if (!isBackAction && state.view !== viewName) {
+        state.navHistory.push(state.view);
+      }
       state.view = viewName;
       if (state.isScanning && viewName !== 'scanner') {
         stopLiveCameraScanner();
@@ -1212,6 +1348,15 @@ SPA_HTML = """<!DOCTYPE html>
 
       render();
       window.scrollTo(0, 0);
+    }
+
+    function goBack() {
+      if (state.navHistory.length > 0) {
+        const prev = state.navHistory.pop();
+        navigate(prev, true);
+      } else {
+        navigate(isSuperAdmin() ? 'admin_hq' : 'dashboard', true);
+      }
     }
 
     function isSuperAdmin() {
@@ -1304,6 +1449,7 @@ SPA_HTML = """<!DOCTYPE html>
       state.user = null;
       state.products = [];
       state.selectedProductId = null;
+      state.navHistory = [];
       navigate('landing');
     }
 
@@ -1343,18 +1489,53 @@ SPA_HTML = """<!DOCTYPE html>
 
     async function handleAddProductForm(e) {
       e.preventDefault();
-      const name = document.getElementById('newProdName').value;
-      const mrp = parseFloat(document.getElementById('newProdMrp').value) || 0;
-      const category = document.getElementById('newProdCat').value;
+      const name = state.addProductDraft.name.trim();
+      const mrp = parseFloat(state.addProductDraft.mrp) || 0;
+      const category = state.addProductDraft.category;
 
       try {
         const newP = await apiRequest('/api/products/auto', 'POST', { name, mrp, category });
+        state.addProductDraft = { name: '', mrp: '', category: 'General' };
         await loadProducts();
         state.selectedProductId = newP.id;
         state.barcodeVal = newP.barcode;
         navigate('manage_catalog');
       } catch (err) {
         alert("Failed to add product: " + err.message);
+      }
+    }
+
+    function openQuickCategoryModal() {
+      const modal = document.getElementById('quickCategoryModal');
+      const input = document.getElementById('quickCategoryInput');
+      if (modal) {
+        modal.classList.remove('hidden');
+        if (input) {
+          input.value = '';
+          input.focus();
+        }
+      }
+    }
+
+    function closeQuickCategoryModal() {
+      const modal = document.getElementById('quickCategoryModal');
+      if (modal) modal.classList.add('hidden');
+    }
+
+    async function handleQuickAddCategory(e) {
+      e.preventDefault();
+      const input = document.getElementById('quickCategoryInput');
+      const name = input ? input.value.trim() : '';
+      if (!name) return;
+
+      try {
+        const added = await apiRequest('/api/categories', 'POST', { name });
+        closeQuickCategoryModal();
+        await loadCategories();
+        state.addProductDraft.category = added.name;
+        render();
+      } catch (err) {
+        alert("Could not add category: " + err.message);
       }
     }
 
@@ -1699,8 +1880,11 @@ SPA_HTML = """<!DOCTYPE html>
     }
 
     async function performScanLookup() {
-      const val = state.scannerInput.trim();
+      let val = state.scannerInput.trim();
       if (!val) return;
+      if (val.includes('/verify/')) {
+        val = val.split('/verify/')[1].split('?')[0].split('#')[0];
+      }
       state.scannerError = '';
       state.scannerResult = null;
 
@@ -2046,7 +2230,7 @@ SPA_HTML = """<!DOCTYPE html>
                 ${isLoggedIn ? `
                   <button onclick="navigate('${isSuperAdmin() ? 'admin_hq' : 'dashboard'}')" class="px-9 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-sm shadow-xl shadow-indigo-200 transition flex items-center gap-3">
                     <span>Open ${isSuperAdmin() ? 'SuperAdmin Control Hub' : 'Store Dashboard'}</span>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                   </button>
                 ` : `
                   <button onclick="navigate('auth'); state.authMode='register'; render();" class="px-9 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-sm shadow-xl shadow-indigo-200 transition">
@@ -2261,10 +2445,11 @@ SPA_HTML = """<!DOCTYPE html>
         </div>
       `;
     }
-          
+
     function renderAppShell(contentHtml) {
       const plan = getUserPlan();
       const isSuper = isSuperAdmin();
+      const storeName = (state.user && state.user.business_name) ? state.user.business_name : 'Retail Store';
       const navItems = [
         ...(isSuper ? [{ key: 'admin_hq', label: 'SaaS Admin HQ', icon: '🛡️' }] : []),
         { key: 'dashboard', label: 'Dashboard', icon: '📊' },
@@ -2273,12 +2458,13 @@ SPA_HTML = """<!DOCTYPE html>
         { key: 'barcodes', label: 'Barcode Generator', icon: '🏷️' },
         { key: 'labels', label: 'Label Designer', icon: '📐' },
         { key: 'scanner', label: 'Scan & Verify', icon: '📷' },
-        { key: 'settings', label: 'Settings', icon: '⚙️' }
+        { key: 'settings', label: 'Settings', icon: '⚙️️' }
       ];
 
       return `
         <div class="flex h-screen overflow-hidden bg-slate-50">
           <aside class="w-64 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0 border-r border-slate-800 z-30">
+            <!-- CLICKING HERE NAVIGATES WITHIN DASHBOARD / CONTROL HUB - NEVER TO LANDING PAGE -->
             <div class="p-5 flex items-center gap-3 border-b border-slate-800 cursor-pointer" onclick="navigate('${isSuper ? 'admin_hq' : 'dashboard'}')">
               <div class="h-10 w-10 rounded-2xl ${isSuper ? 'bg-amber-500' : 'bg-indigo-600'} flex items-center justify-center text-white font-extrabold shadow-md text-sm">
                 ${isSuper ? 'HQ' : 'LF'}
@@ -2301,7 +2487,7 @@ SPA_HTML = """<!DOCTYPE html>
             <div class="p-4 border-t border-slate-800 bg-slate-950/40">
               <div class="flex items-center justify-between">
                 <div>
-                  <div class="text-xs font-bold text-white truncate max-w-[110px]">${state.user ? state.user.business_name : 'Retail HQ'}</div>
+                  <div class="text-xs font-bold text-white truncate max-w-[110px]" title="${storeName}">${storeName}</div>
                   <div class="text-[10px] text-emerald-400 font-semibold uppercase mt-0.5">${isSuper ? '★ SaaS Master Admin' : plan + ' Plan'}</div>
                 </div>
                 <button onclick="logout()" class="px-2.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-rose-950/60 hover:text-rose-400 text-slate-400 text-xs font-semibold flex items-center gap-1.5 transition" title="Sign Out">
@@ -2318,7 +2504,7 @@ SPA_HTML = """<!DOCTYPE html>
               ` : `
                 <div class="mt-3">
                   <button onclick="navigate('admin_hq')" class="w-full py-2 rounded-xl bg-amber-600/90 hover:bg-amber-600 text-white text-[11px] font-bold transition shadow-sm">
-                    🛡️ Manage All Customers
+                    🛡 Manage All Customers
                   </button>
                 </div>
               `}
@@ -2327,7 +2513,8 @@ SPA_HTML = """<!DOCTYPE html>
 
           <div class="flex-1 flex flex-col min-w-0 overflow-y-auto">
             <header class="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between flex-shrink-0">
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-3">
+                <div class="h-4 w-[1px] bg-slate-200 mx-1"></div>
                 <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Section /</span>
                 <span class="text-sm font-bold text-slate-800 capitalize">${state.view.replace('_', ' ')}</span>
               </div>
@@ -2412,7 +2599,6 @@ SPA_HTML = """<!DOCTYPE html>
               <h1 class="text-2xl font-bold text-slate-900">Manage Catalog</h1>
               <p class="text-xs text-slate-500 mt-0.5">Edit, delete, and manage all registered products and locked EAN barcodes.</p>
             </div>
-            <button onclick="navigate('add_product')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-100 transition">+ Add Product</button>
           </div>
 
           <div class="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
@@ -2459,7 +2645,7 @@ SPA_HTML = """<!DOCTYPE html>
 
       const catOptions = (state.categories || []).map(c => {
         const val = typeof c === 'string' ? c : c.name;
-        return `<option value="${val}">${val}</option>`;
+        return `<option value="${val}" ${state.addProductDraft.category === val ? 'selected' : ''}>${val}</option>`;
       }).join('');
 
       return `
@@ -2473,21 +2659,21 @@ SPA_HTML = """<!DOCTYPE html>
             <form onsubmit="handleAddProductForm(event)" class="space-y-5">
               <div>
                 <label class="block text-xs font-semibold text-slate-700 mb-1.5">Product Name</label>
-                <input id="newProdName" type="text" required placeholder="e.g. Pure Cotton Kurti Pant Set" class="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                <input id="newProdName" type="text" required value="${state.addProductDraft.name}" oninput="state.addProductDraft.name = this.value" placeholder="e.g. Pure Cotton Kurti Pant Set" class="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none">
               </div>
 
               <div class="grid grid-cols-2 gap-4">
                 <div>
                   <label class="block text-xs font-semibold text-slate-700 mb-1.5">MRP (₹)</label>
-                  <input id="newProdMrp" type="number" step="0.01" required placeholder="1499.00" class="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                  <input id="newProdMrp" type="number" step="0.01" required value="${state.addProductDraft.mrp}" oninput="state.addProductDraft.mrp = this.value" placeholder="1499.00" class="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none">
                 </div>
                 <div>
                   <label class="block text-xs font-semibold text-slate-700 mb-1.5">Category</label>
                   <div class="flex gap-2">
-                    <select id="newProdCat" class="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white">
+                    <select id="newProdCat" onchange="state.addProductDraft.category = this.value" class="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white">
                       ${catOptions}
                     </select>
-                    <button type="button" onclick="navigate('settings')" class="px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-indigo-600 hover:bg-indigo-50" title="Add More Categories">
+                    <button type="button" onclick="openQuickCategoryModal()" class="px-3.5 py-2 border border-slate-200 rounded-xl text-sm font-bold text-indigo-600 hover:bg-indigo-50 transition" title="Add New Category Directly">
                       +
                     </button>
                   </div>
@@ -2556,7 +2742,7 @@ SPA_HTML = """<!DOCTYPE html>
                 <select onchange="state.barcodeSymbology = this.value; renderBarcodeStudio();" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm bg-white font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none">
                   <option value="ean13" ${state.barcodeSymbology === 'ean13' ? 'selected' : ''}>EAN-13 (Standard Retail Scan)</option>
                   <option value="code128" ${state.barcodeSymbology === 'code128' ? 'selected' : ''}>Code-128 (Logistics & Packaging)</option>
-                  <option value="qrcode" ${state.barcodeSymbology === 'qrcode' ? 'selected' : ''}>QR Code (Product Details & Scan Info)</option>
+                  <option value="qrcode" ${state.barcodeSymbology === 'qrcode' ? 'selected' : ''}>QR Code (Direct Mobile Camera Verification URL)</option>
                 </select>
               </div>
 
@@ -2688,7 +2874,7 @@ SPA_HTML = """<!DOCTYPE html>
         <div class="max-w-3xl mx-auto space-y-6">
           <div class="text-center">
             <h1 class="text-2xl font-bold text-slate-900">Scan & Verify Barcode</h1>
-            <p class="text-xs text-slate-500 mt-1">Scan using webcam or input any 13-digit EAN code to look up inventory data.</p>
+            <p class="text-xs text-slate-500 mt-1">Scan using webcam or input any 13-digit EAN code / Verification URL to look up inventory data.</p>
           </div>
 
           <div class="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
@@ -2706,7 +2892,7 @@ SPA_HTML = """<!DOCTYPE html>
             <div>
               <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">Manual 13-Digit Entry / Barcode Gun Input</label>
               <div class="flex gap-2">
-                <input type="text" id="scanInput" value="${state.scannerInput}" oninput="state.scannerInput = this.value" onkeydown="if(event.key==='Enter') performScanLookup();" placeholder="Enter barcode number..." class="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <input type="text" id="scanInput" autofocus value="${state.scannerInput}" oninput="state.scannerInput = this.value" onkeydown="if(event.key==='Enter') performScanLookup();" placeholder="Scan barcode with gun or type manually..." class="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <button onclick="performScanLookup()" class="px-6 py-3 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl transition shadow-md">
                   Verify Code
                 </button>
@@ -2867,12 +3053,18 @@ SPA_HTML = """<!DOCTYPE html>
     function renderAuth() {
       const isLogin = state.authMode === 'login';
       return `
-        <div class="min-h-screen flex items-center justify-center px-4 py-12 bg-slate-100">
+        <div class="min-h-screen flex flex-col items-center justify-center px-4 py-12 bg-slate-100">
+          <!-- AUTH LOGO HEADER: CLICKING GOES DIRECTLY TO LANDING PAGE -->
+          <div class="flex items-center gap-3 cursor-pointer mb-8" onclick="navigate('landing')">
+            <div class="h-11 w-11 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-300 font-extrabold text-lg">LF</div>
+            <div>
+              <span class="font-extrabold text-2xl text-slate-900 tracking-tight leading-none block">Label<span class="text-indigo-600">Forge</span></span>
+              <span class="text-[9px] uppercase tracking-widest text-slate-400 font-bold">Enterprise GS1 Engine</span>
+            </div>
+          </div>
+
           <div class="w-full max-w-md bg-white p-8 rounded-3xl border border-slate-200 shadow-xl">
             <div class="text-center mb-6">
-              <div class="h-10 w-10 mx-auto rounded-2xl bg-indigo-600 flex items-center justify-center text-white font-extrabold shadow-md shadow-indigo-500/20 text-sm mb-3">
-                LF
-              </div>
               <h2 class="text-2xl font-bold text-slate-900">${isLogin ? 'Sign In to Workspace' : 'Create Business Account'}</h2>
               <p class="text-xs text-slate-500 mt-1">Access your catalog, barcode generator & labels.</p>
             </div>
