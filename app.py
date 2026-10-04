@@ -2058,7 +2058,6 @@ SPA_HTML = """<!DOCTYPE html>
                 `}
               </div>
 
-              <!-- LIVE DEMO CANVAS CONTAINER -->
               <div class="mt-16 max-w-4xl mx-auto rounded-3xl bg-slate-900 p-4 sm:p-8 shadow-2xl border border-slate-800 text-left glow-indigo">
                 <div class="flex items-center justify-between pb-4 border-b border-slate-800 text-xs">
                   <div class="flex items-center gap-2">
@@ -2117,7 +2116,6 @@ SPA_HTML = """<!DOCTYPE html>
             </div>
           </section>
 
-          <!-- BENCHMARK SECTION -->
           <section id="analytics" class="py-24 bg-slate-50 border-b border-slate-200">
             <div class="max-w-7xl mx-auto px-4 sm:px-6">
               <div class="text-center max-w-3xl mx-auto mb-16">
@@ -2149,7 +2147,6 @@ SPA_HTML = """<!DOCTYPE html>
             </div>
           </section>
 
-          <!-- ROI CALCULATOR -->
           <section id="calculator" class="py-24 bg-white border-b border-slate-200">
             <div class="max-w-5xl mx-auto px-4 sm:px-6">
               <div class="bg-slate-950 text-white rounded-3xl p-8 sm:p-14 shadow-2xl border border-slate-800">
@@ -2192,22 +2189,61 @@ SPA_HTML = """<!DOCTYPE html>
             </div>
           </section>
 
-          <!-- FOUNDER SECTION -->
+          <!-- FOUNDER & LEADERSHIP SECTION -->
           <section id="founder" class="py-24 bg-white border-b border-slate-200">
-            <div class="max-w-4xl mx-auto px-4 sm:px-6">
-              <div class="bg-gradient-to-br from-indigo-50 via-slate-50 to-white rounded-3xl border border-indigo-100 p-8 sm:p-12 shadow-sm flex flex-col md:flex-row items-center gap-8">
-                <div class="w-32 h-32 rounded-3xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex-shrink-0 flex items-center justify-center font-extrabold text-4xl shadow-xl shadow-indigo-200">
-                  SC
-                </div>
-                <div class="space-y-3">
-                  <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-100 text-indigo-800 text-[11px] font-extrabold uppercase">
-                    Leadership Spotlight
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+              <div class="text-center max-w-2xl mx-auto mb-12">
+                <span class="text-xs uppercase font-extrabold tracking-widest text-indigo-600 block mb-2">Executive Leadership</span>
+                <h2 class="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">The Vision Behind LabelForge</h2>
+              </div>
+
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
+                <!-- SIDHARTH CHOPRA (CEO) -->
+                <div class="bg-gradient-to-br from-indigo-50 via-slate-50 to-white rounded-3xl border border-indigo-100 p-8 shadow-sm flex flex-col justify-between">
+                  <div>
+                    <div class="flex items-center gap-4 mb-6">
+                      <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex-shrink-0 flex items-center justify-center font-extrabold text-2xl shadow-lg shadow-indigo-200">
+                        SC
+                      </div>
+                      <div>
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-extrabold uppercase">
+                          Executive Leadership
+                        </span>
+                        <h3 class="text-xl font-extrabold text-slate-900 mt-1">Sidharth Chopra</h3>
+                        <p class="text-xs font-semibold text-indigo-600">Chief Executive Officer (CEO)</p>
+                      </div>
+                    </div>
+                    <p class="text-xs text-slate-700 leading-relaxed">
+                      Sidharth Chopra is the dynamic 14-year-old CEO driving LabelForge’s product architecture and technical innovation. Combining core software engineering with automated retail workflows, Sidharth engineered the high-precision vector engine to eliminate barcode read failures and bring frictionless catalog labeling to modern digital commerce.
+                    </p>
                   </div>
-                  <h3 class="text-2xl font-extrabold text-slate-900">Sidharth Chopra — CEO & Founder</h3>
-                  <p class="text-sm text-slate-700 leading-relaxed">
-                    Sidharth Chopra is the 14-year-old visionary founder and CEO of LabelForge, pioneering automated barcode engineering for Indian retail. Combining advanced software development with deep enterprise logic, Sidharth engineered this high-precision platform to eliminate checkout scanning failures and streamline multi-tenant catalog labeling for growing merchants. Under his leadership, LabelForge delivers mathematical GS1 compliance, auto-scaling vector layouts, and real-time inventory verification, empowering businesses across the country with accessible, world-class commerce infrastructure built from a remarkable, forward-thinking perspective.
-                  </p>
-                  <div class="pt-2 text-xs font-mono text-slate-400">Founder & Chief Executive Officer // LabelForge Suite</div>
+                  <div class="pt-6 border-t border-slate-200/60 mt-6 text-[11px] font-mono text-slate-400">
+                    Chief Executive Officer // LabelForge Pro Suite
+                  </div>
+                </div>
+
+                <!-- SUNIL CHOPRA (FOUNDER) -->
+                <div class="bg-gradient-to-br from-slate-50 via-indigo-50/40 to-white rounded-3xl border border-slate-200 p-8 shadow-sm flex flex-col justify-between">
+                  <div>
+                    <div class="flex items-center gap-4 mb-6">
+                      <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-slate-800 to-slate-950 text-white flex-shrink-0 flex items-center justify-center font-extrabold text-2xl shadow-lg shadow-slate-300">
+                        SC
+                      </div>
+                      <div>
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-extrabold uppercase">
+                          Founder & Strategist
+                        </span>
+                        <h3 class="text-xl font-extrabold text-slate-900 mt-1">Sunil Chopra</h3>
+                        <p class="text-xs font-semibold text-emerald-600">Founder</p>
+                      </div>
+                    </div>
+                    <p class="text-xs text-slate-700 leading-relaxed">
+                      Sunil Chopra is the Founder of LabelForge, providing strategic direction, industry insight, and commercial guidance. With deep expertise across trade, business operations, and enterprise execution, Sunil spearheads the company’s mission to build scalable retail infrastructure and empower businesses with dependable GS1 standard technology.
+                    </p>
+                  </div>
+                  <div class="pt-6 border-t border-slate-200/60 mt-6 text-[11px] font-mono text-slate-400">
+                    Founder // Strategic Operations & Commercial Growth
+                  </div>
                 </div>
               </div>
             </div>
@@ -2225,7 +2261,7 @@ SPA_HTML = """<!DOCTYPE html>
         </div>
       `;
     }
-
+          
     function renderAppShell(contentHtml) {
       const plan = getUserPlan();
       const isSuper = isSuperAdmin();
