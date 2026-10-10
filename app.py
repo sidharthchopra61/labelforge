@@ -46,15 +46,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days token expiry
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@lableforge.com")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Chopraji995#")
 
-PAYMENT_CONFIG = {
-    "upi_id": os.getenv("PAYMENT_UPI_ID", "merchant.labelforge@hdfcbank"),
-    "payee_name": os.getenv("PAYMENT_PAYEE_NAME", "LabelForge Technologies"),
-    "bank_name": "HDFC Bank (Commercial Settlement)",
-    "account_number": "50200098765432",
-    "ifsc_code": "HDFC0000123",
-    "branch": "Commercial Business Center",
-    "currency_symbol": "₹"
-}
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./labelforge.db")
 
@@ -185,10 +176,6 @@ def get_db():
 def init_defaults():
     db = SessionLocal()
     try:
-        if not db.query(SystemSetting).filter(SystemSetting.key == "pricing_config").first():
-            cfg = {"free_price": 0, "business_price": 799, "professional_price": 1999, "symbol": "₹"}
-            db.add(SystemSetting(key="pricing_config", value=json.dumps(cfg)))
-            db.commit()
 
         admin_user = db.query(User).filter(User.email == ADMIN_EMAIL).first()
         if not admin_user:
@@ -324,7 +311,6 @@ class BarcodeEngine:
         })
         raw_svg = buf.getvalue().decode('utf-8')
 
-        # Add responsive attributes without distorting the internal coordinate grid
         if 'preserveAspectRatio' not in raw_svg:
             raw_svg = re.sub(
                 r'<svg\b([^>]*)>',
@@ -333,10 +319,12 @@ class BarcodeEngine:
                 count=1
             )
         return raw_svg
+
+
 # ==========================================
 # 4. REST APIS & FASTAPI
 # ==========================================
-app = FastAPI(title="LabelForge Pro Engine", version="8.9.1")
+app = FastAPI(title="LabelForge Pro Engine", version="8.9.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -396,27 +384,12 @@ class SheetPdfRequest(BaseModel):
     single_barcode: bool = False
 
 
-class MockPaymentRequest(BaseModel):
-    plan: str
-    amount: float
-    payment_mode: str
-    bank_name: Optional[str] = None
-
-
-class AdminUpdateCustomerPlanSchema(BaseModel):
-    business_id: int
-    new_plan: str
 
 
 class AdminToggleUserSuspendSchema(BaseModel):
     user_id: int
     is_suspended: bool
 
-
-class AdminUpdatePricingSchema(BaseModel):
-    free_price: float
-    business_price: float
-    professional_price: float
 
 
 # Category Endpoints
@@ -488,7 +461,7 @@ def public_barcode_lookup(barcode_num: str, db: Session = Depends(get_db)):
     }
 
 
-# Standalone Public Verification Page for Mobile Camera Scans
+# Standalone Public Verification Page
 @app.get("/verify/{barcode_num}", response_class=HTMLResponse)
 def verify_product_page(barcode_num: str, db: Session = Depends(get_db)):
     clean_code = re.sub(r'[\s-]', '', barcode_num.strip())
@@ -559,54 +532,6 @@ def verify_product_page(barcode_num: str, db: Session = Depends(get_db)):
     """)
 
 
-@app.get("/api/config/payment")
-def get_payment_details(amount: float = 799.0):
-    amount_str = f"{amount:.2f}"
-    txn_ref = f"ORD{int(datetime.utcnow().timestamp())}"
-    payee_encoded = PAYMENT_CONFIG['payee_name'].replace(' ', '%20')
-    upi_string = (
-        f"upi://pay?pa={PAYMENT_CONFIG['upi_id']}"
-        f"&pn={payee_encoded}"
-        f"&am={amount_str}"
-        f"&mam={amount_str}"
-        f"&cu=INR"
-        f"&tr={txn_ref}"
-        f"&tn=Subscription%20Plan"
-    )
-    qr = qrcode.QRCode(box_size=8, border=2)
-    qr.add_data(upi_string)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    qr_b64 = base64.b64encode(buf.getvalue()).decode()
-
-    return {
-        "payment_info": PAYMENT_CONFIG,
-        "upi_qr_base64": qr_b64,
-        "upi_string": upi_string,
-        "amount": amount
-    }
-
-
-@app.post("/api/billing/mock-pay")
-def process_mock_payment(req: MockPaymentRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not user.business:
-        raise HTTPException(status_code=400, detail="Business profile not found")
-
-    target_plan = req.plan.lower()
-    if target_plan not in ["free", "business", "professional"]:
-        raise HTTPException(status_code=400, detail="Invalid plan selected")
-
-    user.business.plan = target_plan
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Payment simulated successfully via {req.payment_mode.upper()}! Upgraded to {target_plan.capitalize()} Plan.",
-        "new_plan": target_plan,
-        "transaction_id": f"TXN-SIM-{int(datetime.utcnow().timestamp())}"
-    }
 
 
 @app.post("/api/auth/register")
@@ -618,7 +543,7 @@ def register(data: RegisterSchema, db: Session = Depends(get_db)):
     biz = Business(
         name=data.business_name.strip() or "My Retail Store",
         phone=data.phone or "",
-        plan=data.plan or "free",
+        plan="free",
         sku_prefix="PRD",
         sku_padding=6
     )
@@ -716,66 +641,29 @@ def admin_get_overview(admin: User = Depends(require_superadmin), db: Session = 
     all_users = db.query(User).order_by(User.created_at.desc()).all()
     all_businesses = db.query(Business).order_by(Business.created_at.desc()).all()
     all_products = db.query(Product).all()
-
-    plan_counts = {"free": 0, "business": 0, "professional": 0, "lifetime_unlimited": 0}
-    for b in all_businesses:
-        p = (b.plan or "free").lower()
-        plan_counts[p] = plan_counts.get(p, 0) + 1
-
-    cfg_rec = db.query(SystemSetting).filter(SystemSetting.key == "pricing_config").first()
-    pricing_config = {"free_price": 0, "business_price": 799, "professional_price": 1999}
-    if cfg_rec and cfg_rec.value:
-        try:
-            parsed = json.loads(cfg_rec.value)
-            pricing_config["business_price"] = float(parsed.get("business_price", 799))
-            pricing_config["professional_price"] = float(parsed.get("professional_price", 1999))
-        except Exception:
-            pass
-
     customers_list = []
-    for b in all_businesses:
-        primary_user = next((u for u in b.users if u.role in ("owner", "superadmin")), None)
-        if not primary_user and b.users:
-            primary_user = b.users[0]
-
-        prod_count = len(b.products)
+    for biz in all_businesses:
+        primary_user = next((u for u in biz.users if u.role in ("owner", "superadmin")), None)
+        if not primary_user and biz.users:
+            primary_user = biz.users[0]
         customers_list.append({
-            "business_id": b.id,
-            "business_name": b.name or "Untitled Business",
-            "plan": b.plan or "free",
-            "created_at": b.created_at.strftime("%Y-%m-%d"),
+            "business_id": biz.id,
+            "business_name": biz.name or "Untitled Business",
+            "created_at": biz.created_at.strftime("%Y-%m-%d"),
             "owner_id": primary_user.id if primary_user else None,
             "owner_name": primary_user.full_name if primary_user else "Registered User",
             "owner_email": primary_user.email if primary_user else "N/A",
             "is_suspended": primary_user.is_suspended if primary_user else False,
-            "products_count": prod_count
+            "products_count": len(biz.products),
         })
-
-    mrr = (plan_counts.get("business", 0) * int(pricing_config["business_price"])) + (
-                plan_counts.get("professional", 0) * int(pricing_config["professional_price"]))
-
     return {
         "stats": {
             "total_tenants": len(all_businesses),
             "total_users": len(all_users),
             "total_catalog_products": len(all_products),
-            "estimated_mrr": mrr,
-            "plans": plan_counts
         },
-        "pricing_config": pricing_config,
-        "customers": customers_list
+        "customers": customers_list,
     }
-
-
-@app.put("/api/admin/customer/plan")
-def admin_update_customer_plan(req: AdminUpdateCustomerPlanSchema, admin: User = Depends(require_superadmin),
-                               db: Session = Depends(get_db)):
-    biz = db.query(Business).filter(Business.id == req.business_id).first()
-    if not biz:
-        raise HTTPException(status_code=404, detail="Business not found")
-    biz.plan = req.new_plan.lower()
-    db.commit()
-    return {"status": "success", "message": f"Updated {biz.name} to {req.new_plan.upper()}"}
 
 
 @app.put("/api/admin/user/suspend")
@@ -805,24 +693,6 @@ def admin_delete_customer(biz_id: int, admin: User = Depends(require_superadmin)
     return {"status": "success", "message": "Business deleted successfully"}
 
 
-@app.put("/api/admin/pricing")
-def admin_update_pricing(req: AdminUpdatePricingSchema, admin: User = Depends(require_superadmin),
-                         db: Session = Depends(get_db)):
-    cfg_rec = db.query(SystemSetting).filter(SystemSetting.key == "pricing_config").first()
-    new_cfg = {
-        "free_price": req.free_price,
-        "business_price": req.business_price,
-        "professional_price": req.professional_price,
-        "symbol": "₹"
-    }
-    if not cfg_rec:
-        cfg_rec = SystemSetting(key="pricing_config", value=json.dumps(new_cfg))
-        db.add(cfg_rec)
-    else:
-        cfg_rec.value = json.dumps(new_cfg)
-    db.commit()
-    return {"status": "success", "message": "Pricing configuration saved"}
-
 
 @app.get("/api/products")
 def get_products(query: Optional[str] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -842,17 +712,7 @@ def create_product_auto(data: CleanProductCreate, user: User = Depends(get_curre
         raise HTTPException(status_code=400, detail="User has no registered business profile")
 
     biz = user.business
-    user_plan = biz.plan if biz else "free"
-    is_super = (user.email == ADMIN_EMAIL or user.role == "superadmin" or user_plan == "lifetime_unlimited")
     total_count = db.query(Product).filter(Product.business_id == user.business_id).count()
-
-    if not is_super:
-        if user_plan == "free" and total_count >= 5:
-            raise HTTPException(status_code=403,
-                                detail="Free Plan limit reached (Max 5 products). Upgrade to Business for up to 100 products.")
-        elif user_plan == "business" and total_count >= 100:
-            raise HTTPException(status_code=403,
-                                detail="Business Plan limit reached (Max 100 products). Upgrade to Enterprise for unlimited products.")
 
     prefix = biz.sku_prefix if biz and biz.sku_prefix else "PRD"
     padding = biz.sku_padding if biz and biz.sku_padding else 6
@@ -958,16 +818,6 @@ def render_barcode(request: Request, symbology: str = "ean13", value: str = "", 
 # ==========================================
 @app.post("/api/labels/export-pdf")
 def export_pdf_sheet(req: SheetPdfRequest, user: User = Depends(get_current_user)):
-    user_plan = user.business.plan if user.business else "free"
-    is_super = (user.email == ADMIN_EMAIL or user.role == "superadmin" or user_plan == "lifetime_unlimited")
-
-    if not req.single_label and not req.single_barcode:
-        if not is_super and user_plan == "free":
-            raise HTTPException(status_code=403,
-                                detail="Bulk printing is a Premium feature. Upgrade to Business or Enterprise.")
-        if not is_super and user_plan == "business" and len(req.items) > 30:
-            raise HTTPException(status_code=403, detail="Business Plan supports up to 30 labels/sheet.")
-
     buf = io.BytesIO()
     lw = req.label_width_mm * mm
     lh = req.label_height_mm * mm
@@ -1034,7 +884,6 @@ def export_pdf_sheet(req: SheetPdfRequest, user: User = Depends(get_current_user
                     avail_h = max(10 * mm, top_cursor - (3 * mm))
                     sc = min(avail_w / draw.width, avail_h / draw.height, 1.0)
                     draw.scale(sc, sc)
-                    # Center horizontally within the label width
                     ox = (lw - (draw.width * sc)) / 2.0
                     oy = 3 * mm + ((avail_h - (draw.height * sc)) / 2.0)
                     renderPDF.draw(draw, c, ox, oy)
@@ -1229,22 +1078,68 @@ SPA_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-  
-  // ==========================================
+    // Direct Browser Print Utility
+    function printElementHtml(htmlContent, title = "Print Job") {
+      const existingIframe = document.getElementById('lfPrintFrame');
+      if (existingIframe) existingIframe.remove();
+
+      const iframe = document.createElement('iframe');
+      iframe.id = 'lfPrintFrame';
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      document.body.appendChild(iframe);
+
+      const frameDoc = iframe.contentWindow || iframe.contentDocument.document || iframe.contentDocument;
+      frameDoc.document.open();
+      frameDoc.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>${title}</title>
+          <style>
+            @page { size: auto; margin: 5mm; }
+            body { 
+              margin: 0; 
+              padding: 10px; 
+              display: flex; 
+              align-items: center; 
+              justify-content: center; 
+              background: #fff; 
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }
+            .print-wrapper { width: 100%; display: flex; justify-content: center; }
+            svg { max-width: 100%; height: auto; }
+          </style>
+        </head>
+        <body>
+          <div class="print-wrapper">${htmlContent}</div>
+          <script>
+            window.onload = function() {
+              window.focus();
+              window.print();
+            };
+          <\\/script>
+        </body>
+        </html>
+      `);
+      frameDoc.document.close();
+    }
+
     // HARDWARE BARCODE SCANNER LISTENER (HID)
-    // ==========================================
     let barcodeBuffer = '';
     let lastKeyTime = 0;
 
     window.addEventListener('keydown', (e) => {
-      // Only capture automated hardware scans if on the 'scanner' page
       if (state.view !== 'scanner') return;
 
       const currentTime = new Date().getTime();
       const timeDiff = currentTime - lastKeyTime;
       lastKeyTime = currentTime;
 
-      // Handle the 'Enter' suffix transmitted by the scanner
       if (e.key === 'Enter') {
         if (barcodeBuffer.length >= 8) {
           e.preventDefault();
@@ -1257,17 +1152,13 @@ SPA_HTML = """<!DOCTYPE html>
         return;
       }
 
-      // Barcode scanners type keystrokes in under 40 milliseconds
       if (timeDiff < 50) {
-        if (e.key.length === 1) {
-          barcodeBuffer += e.key;
-        }
+        if (e.key.length === 1) barcodeBuffer += e.key;
       } else {
-        // Reset buffer if standard slow human typing
         barcodeBuffer = e.key.length === 1 ? e.key : '';
       }
     });
-  
+
     window.onerror = function(msg, url, line) {
       const errBox = document.getElementById('errorBoundary');
       if (errBox) {
@@ -1275,9 +1166,6 @@ SPA_HTML = """<!DOCTYPE html>
         errBox.innerText = "Error: " + msg + " (Line " + line + ")";
       }
     };
-
-    const DEFAULT_ADMIN_EMAIL = "admin@lableforge.com";
-    const DEFAULT_ADMIN_PASS = "Chopraji995#";
 
     let state = {
       view: 'landing',
@@ -1289,10 +1177,6 @@ SPA_HTML = """<!DOCTYPE html>
       addProductDraft: { name: '', mrp: '', category: 'General' },
       products: [],
       categories: ["General", "Apparel", "Footwear", "Electronics", "Cosmetics", "FMCG"],
-      paymentData: null,
-      selectedPlanForCheckout: null,
-      activePaymentTab: 'upi',
-      selectedBank: 'HDFC Bank',
       selectedProductId: null,
       dimWidth: 76,
       dimHeight: 50,
@@ -1350,18 +1234,9 @@ SPA_HTML = """<!DOCTYPE html>
       window.scrollTo(0, 0);
     }
 
-    function goBack() {
-      if (state.navHistory.length > 0) {
-        const prev = state.navHistory.pop();
-        navigate(prev, true);
-      } else {
-        navigate(isSuperAdmin() ? 'admin_hq' : 'dashboard', true);
-      }
-    }
-
     function isSuperAdmin() {
       if (!state.user) return false;
-      return state.user.is_admin || state.user.email === DEFAULT_ADMIN_EMAIL || state.user.role === 'superadmin';
+      return state.user.is_admin || state.user.email === 'admin@lableforge.com' || state.user.role === 'superadmin';
     }
 
     function getUserPlan() {
@@ -1773,6 +1648,31 @@ SPA_HTML = """<!DOCTYPE html>
       `;
     }
 
+    async function printCurrentBarcodeDirectly() {
+      ensureProductSelected();
+      const p = state.products.find(x => x.id === state.selectedProductId);
+      if (!p) return alert("Select or add a product to your catalog first.");
+      if (!state.barcodeSvg) await renderBarcodeStudio();
+
+      const printHtml = `
+        <div style="text-align: center; padding: 20px;">
+          <h3 style="margin: 0 0 10px 0; font-family: sans-serif; font-size: 14px;">${p.name}</h3>
+          <div style="max-width: 320px; margin: auto;">${state.barcodeSvg}</div>
+        </div>
+      `;
+      printElementHtml(printHtml, `Barcode_${p.sku}`);
+    }
+
+    async function printCurrentLabelDirectly() {
+      ensureProductSelected();
+      const p = state.products.find(x => x.id === state.selectedProductId);
+      if (!p) return alert("Select or add a product to your catalog first.");
+      if (!state.currentSvg) await updateLabelPreviewDOM();
+
+      const labelMarkup = generateDynamicLabelMarkup(p, true);
+      printElementHtml(labelMarkup, `Label_${p.sku}`);
+    }
+
     async function downloadBarcodePdf() {
       ensureProductSelected();
       const p = state.products.find(x => x.id === state.selectedProductId);
@@ -1950,52 +1850,6 @@ SPA_HTML = """<!DOCTYPE html>
       }
     }
 
-    async function startUpgrade(planKey, price) {
-      if (!state.token) {
-        state.authMode = 'login';
-        navigate('auth');
-        return;
-      }
-      state.selectedPlanForCheckout = {
-        key: planKey,
-        title: planKey === 'business' ? 'Business Professional' : 'Enterprise HQ',
-        price: price
-      };
-      try {
-        state.paymentData = await apiRequest(`/api/config/payment?amount=${price}`);
-      } catch(_) {
-        state.paymentData = null;
-      }
-      navigate('checkout');
-    }
-
-    async function triggerMockPayment() {
-      if (!state.selectedPlanForCheckout) return;
-      try {
-        const res = await apiRequest('/api/billing/mock-pay', 'POST', {
-          plan: state.selectedPlanForCheckout.key,
-          amount: state.selectedPlanForCheckout.price,
-          payment_mode: state.activePaymentTab,
-          bank_name: state.selectedBank
-        });
-        alert(res.message);
-        await refreshUserProfile();
-        navigate('dashboard');
-      } catch(err) {
-        alert("Payment simulation failed: " + err.message);
-      }
-    }
-
-    async function adminChangeCustomerPlan(bizId, newPlan) {
-      try {
-        await apiRequest('/api/admin/customer/plan', 'PUT', { business_id: bizId, new_plan: newPlan });
-        await refreshUserProfile();
-        await loadAdminOverview();
-      } catch(err) {
-        alert("Failed to update plan: " + err.message);
-      }
-    }
-
     async function adminToggleSuspend(userId, currentSuspended) {
       try {
         await apiRequest('/api/admin/user/suspend', 'PUT', { user_id: userId, is_suspended: !currentSuspended });
@@ -2012,19 +1866,6 @@ SPA_HTML = """<!DOCTYPE html>
         await loadAdminOverview();
       } catch(err) {
         alert("Delete failed: " + err.message);
-      }
-    }
-
-    async function adminSavePricing(e) {
-      e.preventDefault();
-      const bPrice = parseFloat(document.getElementById('admBizPrice').value) || 799;
-      const pPrice = parseFloat(document.getElementById('admProPrice').value) || 1999;
-      try {
-        await apiRequest('/api/admin/pricing', 'PUT', { free_price: 0, business_price: bPrice, professional_price: pPrice });
-        alert("Platform pricing updated!");
-        await loadAdminOverview();
-      } catch(err) {
-        alert("Pricing save failed: " + err.message);
       }
     }
 
@@ -2188,7 +2029,6 @@ SPA_HTML = """<!DOCTYPE html>
               <a href="#features" class="hover:text-indigo-600 transition">Features</a>
               <a href="#analytics" class="hover:text-indigo-600 transition">Benchmarking</a>
               <a href="#calculator" class="hover:text-indigo-600 transition">ROI Calculator</a>
-              <a href="#plans" onclick="navigate('plans')" class="hover:text-indigo-600 transition">Commercial Plans</a>
               <a href="#founder" class="hover:text-indigo-600 transition text-indigo-700">About Founder</a>
             </nav>
 
@@ -2198,8 +2038,8 @@ SPA_HTML = """<!DOCTYPE html>
                   <span>Enter Workspace</span> &rarr;
                 </button>
               ` : `
-                <button onclick="navigate('auth'); state.authMode='login'; render();" class="px-4 py-2 text-xs font-bold text-slate-700 hover:text-slate-950 transition">Sign In</button>
-                <button onclick="navigate('auth'); state.authMode='register'; render();" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-md shadow-indigo-200 transition">Create Account</button>
+                <button onclick="state.authMode='login'; navigate('auth');" class="px-4 py-2 text-xs font-bold text-slate-700 hover:text-slate-950 transition">Sign In</button>
+                <button onclick="state.authMode='register'; state.authData = { full_name: '', email: '', phone: '', password: '', business_name: '', plan: 'free' }; navigate('auth');" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-md shadow-indigo-200 transition">Create Account</button>
               `}
             </div>
           </div>
@@ -2233,10 +2073,10 @@ SPA_HTML = """<!DOCTYPE html>
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                   </button>
                 ` : `
-                  <button onclick="navigate('auth'); state.authMode='register'; render();" class="px-9 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-sm shadow-xl shadow-indigo-200 transition">
-                    Start Free (5 Products Included)
+                  <button onclick="state.authMode='register'; state.authData = { full_name: '', email: '', phone: '', password: '', business_name: '', plan: 'free' }; navigate('auth');" class="px-9 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-sm shadow-xl shadow-indigo-200 transition">
+                    Start Free — All Features Included
                   </button>
-                  <button onclick="navigate('auth'); state.authMode='login'; render();" class="px-9 py-4 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-900 font-extrabold text-sm transition">
+                  <button onclick="state.authMode='login'; navigate('auth');" class="px-9 py-4 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-900 font-extrabold text-sm transition">
                     Sign In to Portal
                   </button>
                 `}
@@ -2364,7 +2204,7 @@ SPA_HTML = """<!DOCTYPE html>
                   <div class="p-6 bg-gradient-to-b from-indigo-900/40 to-slate-900 rounded-2xl border border-indigo-500/30 text-center">
                     <span class="text-xs uppercase font-extrabold tracking-wider text-indigo-300">Net Estimated Savings</span>
                     <div id="calcSavDisplay" class="text-4xl font-extrabold text-white my-3">₹4,900</div>
-                    <button onclick="navigate('plans')" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg transition">
+                    <button onclick="state.authMode='register'; navigate('auth')" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg transition">
                       Claim Your Plan &rarr;
                     </button>
                   </div>
@@ -2458,13 +2298,12 @@ SPA_HTML = """<!DOCTYPE html>
         { key: 'barcodes', label: 'Barcode Generator', icon: '🏷️' },
         { key: 'labels', label: 'Label Designer', icon: '📐' },
         { key: 'scanner', label: 'Scan & Verify', icon: '📷' },
-        { key: 'settings', label: 'Settings', icon: '⚙️️' }
+        { key: 'settings', label: 'Settings', icon: '⚙' }
       ];
 
       return `
         <div class="flex h-screen overflow-hidden bg-slate-50">
           <aside class="w-64 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0 border-r border-slate-800 z-30">
-            <!-- CLICKING HERE NAVIGATES WITHIN DASHBOARD / CONTROL HUB - NEVER TO LANDING PAGE -->
             <div class="p-5 flex items-center gap-3 border-b border-slate-800 cursor-pointer" onclick="navigate('${isSuper ? 'admin_hq' : 'dashboard'}')">
               <div class="h-10 w-10 rounded-2xl ${isSuper ? 'bg-amber-500' : 'bg-indigo-600'} flex items-center justify-center text-white font-extrabold shadow-md text-sm">
                 ${isSuper ? 'HQ' : 'LF'}
@@ -2488,20 +2327,14 @@ SPA_HTML = """<!DOCTYPE html>
               <div class="flex items-center justify-between">
                 <div>
                   <div class="text-xs font-bold text-white truncate max-w-[110px]" title="${storeName}">${storeName}</div>
-                  <div class="text-[10px] text-emerald-400 font-semibold uppercase mt-0.5">${isSuper ? '★ SaaS Master Admin' : plan + ' Plan'}</div>
+                  <div class="text-[10px] text-emerald-400 font-semibold uppercase mt-0.5">${isSuper ? '★ SaaS Master Admin' : 'Free Workspace'}</div>
                 </div>
                 <button onclick="logout()" class="px-2.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-rose-950/60 hover:text-rose-400 text-slate-400 text-xs font-semibold flex items-center gap-1.5 transition" title="Sign Out">
                   <span>🚪</span>
                   <span>Log Out</span>
                 </button>
               </div>
-              ${!isSuper ? `
-                <div class="mt-3">
-                  <button onclick="navigate('plans')" class="w-full py-2 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-white text-[11px] font-bold transition shadow-sm">
-                    ⚡ Upgrade Plan
-                  </button>
-                </div>
-              ` : `
+              ${!isSuper ? `` : `
                 <div class="mt-3">
                   <button onclick="navigate('admin_hq')" class="w-full py-2 rounded-xl bg-amber-600/90 hover:bg-amber-600 text-white text-[11px] font-bold transition shadow-sm">
                     🛡 Manage All Customers
@@ -2748,7 +2581,10 @@ SPA_HTML = """<!DOCTYPE html>
 
               <div id="bcStudioErr" class="text-xs text-rose-500 font-semibold text-center"></div>
 
-              <div class="pt-4 border-t border-slate-100">
+              <div class="pt-4 border-t border-slate-100 space-y-2">
+                <button onclick="printCurrentBarcodeDirectly()" class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md transition flex items-center justify-center gap-2">
+                  🖨️ Print Barcode Directly
+                </button>
                 <button onclick="downloadBarcodePdf()" class="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition flex items-center justify-center gap-2">
                   Download Barcode Vector PDF
                 </button>
@@ -2831,7 +2667,10 @@ SPA_HTML = """<!DOCTYPE html>
                 </div>
               </div>
 
-              <div class="pt-4 border-t border-slate-100">
+              <div class="pt-4 border-t border-slate-100 space-y-2">
+                <button onclick="printCurrentLabelDirectly()" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md transition flex items-center justify-center gap-2">
+                  🖨️ Print Label Directly
+                </button>
                 <button onclick="downloadLabelPdf()" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition">
                   Download Single Label PDF
                 </button>
@@ -2840,8 +2679,8 @@ SPA_HTML = """<!DOCTYPE html>
               <div class="pt-4 border-t border-slate-100 bg-slate-50 -mx-6 sm:-mx-8 -mb-6 sm:-mb-8 p-6 rounded-b-3xl">
                 <div class="flex items-center justify-between mb-2">
                   <span class="text-xs font-bold text-slate-800">Bulk Sheet Auto-Fit</span>
-                  <span class="text-[10px] ${plan === 'free' ? 'text-amber-600 font-bold' : 'text-indigo-600 font-semibold'} uppercase">
-                    ${plan === 'free' ? 'PRO FEATURE' : 'AUTO-SCALED'}
+                  <span class="text-[10px] text-indigo-600 font-semibold uppercase">
+                    AUTO-SCALED
                   </span>
                 </div>
                 <div class="flex gap-2">
@@ -2976,8 +2815,7 @@ SPA_HTML = """<!DOCTYPE html>
                   const catId = typeof c === 'object' ? c.id : null;
                   return `
                     <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 text-slate-800 text-xs font-bold border border-slate-200">
-                      <span>${catName}</span>
-                      ${catId ? `
+                      <span>${catName}</span>${catId ? `
                         <button type="button" onclick="handleDeleteCategory(${catId}, '${catName}')" class="text-slate-400 hover:text-rose-600 text-sm font-bold ml-1">&times;</button>
                       ` : ''}
                     </span>
@@ -3054,7 +2892,6 @@ SPA_HTML = """<!DOCTYPE html>
       const isLogin = state.authMode === 'login';
       return `
         <div class="min-h-screen flex flex-col items-center justify-center px-4 py-12 bg-slate-100">
-          <!-- AUTH LOGO HEADER: CLICKING GOES DIRECTLY TO LANDING PAGE -->
           <div class="flex items-center gap-3 cursor-pointer mb-8" onclick="navigate('landing')">
             <div class="h-11 w-11 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-300 font-extrabold text-lg">LF</div>
             <div>
@@ -3070,198 +2907,72 @@ SPA_HTML = """<!DOCTYPE html>
             </div>
 
             ${isLogin ? `
-              <form onsubmit="handleLogin(event)" class="space-y-4">
-                <div>
-                  <label class="block text-xs font-semibold text-slate-700 mb-1">Email</label>
-                  <input id="logEmail" type="email" required value="${DEFAULT_ADMIN_EMAIL}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
-                </div>
-                <div>
-                  <label class="block text-xs font-semibold text-slate-700 mb-1">Password</label>
-                  <input id="logPass" type="password" required value="${DEFAULT_ADMIN_PASS}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
-                </div>
-                <button type="submit" class="w-full py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition shadow-md shadow-indigo-100">Sign In</button>
-              </form>
+              
+<form onsubmit="handleLogin(event)" class="space-y-4" autocomplete="off">
+  <!-- Email -->
+  <div>
+    <label class="block text-xs font-semibold text-slate-700 mb-1">
+      Email
+    </label>
+    <input
+      id="logEmail"
+      name="lf_manual_email"
+      type="email"
+      required
+      autocomplete="off"
+      autocapitalize="none"
+      spellcheck="false"
+      readonly
+      onfocus="this.removeAttribute('readonly')"
+      placeholder="Enter your email"
+      class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500"
+    >
+  </div>
+
+  <!-- Password -->
+  <div>
+    <label class="block text-xs font-semibold text-slate-700 mb-1">
+      Password
+    </label>
+    <input
+      id="logPass"
+      name="lf_manual_password"
+      type="password"
+      required
+      autocomplete="new-password"
+      readonly
+      onfocus="this.removeAttribute('readonly')"
+      placeholder="Enter your password"
+      class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500"
+    >
+  </div>
+
+  <button
+    type="submit"
+    class="w-full py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition shadow-md shadow-indigo-100"
+  >
+    Sign In
+  </button>
+</form>
             ` : `
-              <form onsubmit="handleRegister(event)" class="space-y-3">
-                <input oninput="state.authData.full_name = this.value" placeholder="Full Name" type="text" required class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
-                <input oninput="state.authData.business_name = this.value" placeholder="Business / Brand Name" type="text" required class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
-                <input oninput="state.authData.email = this.value" placeholder="Email" type="email" required class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
-                <input oninput="state.authData.password = this.value" placeholder="Password" type="password" required class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
+              <form onsubmit="handleRegister(event)" class="space-y-3" autocomplete="off">
+                <input oninput="state.authData.full_name = this.value" placeholder="Full Name" type="text" required autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
+                <input oninput="state.authData.business_name = this.value" placeholder="Business / Brand Name" type="text" required autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
+                <input oninput="state.authData.phone = this.value" placeholder="Phone Number (Optional)" type="tel" autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
+                <input oninput="state.authData.email = this.value" placeholder="Email" type="email" required autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
+                <input oninput="state.authData.password = this.value" placeholder="Password" type="password" required autocomplete="new-password" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500">
                 <button type="submit" class="w-full py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 mt-2 transition shadow-md shadow-indigo-100">Register</button>
               </form>
             `}
 
             <div class="mt-6 text-center text-xs text-slate-500">
-              ${isLogin ? `Don't have an account? <a href="javascript:void(0)" onclick="state.authMode='register'; render();" class="text-indigo-600 font-semibold">Sign Up</a>` : `Already registered? <a href="javascript:void(0)" onclick="state.authMode='login'; render();" class="text-indigo-600 font-semibold">Sign In</a>`}
+              ${isLogin ? `Don't have an account? <a href="javascript:void(0)" onclick="state.authMode='register'; state.authData = { full_name: '', email: '', phone: '', password: '', business_name: '', plan: 'free' }; render();" class="text-indigo-600 font-semibold">Sign Up</a>` : `Already registered? <a href="javascript:void(0)" onclick="state.authMode='login'; render();" class="text-indigo-600 font-semibold">Sign In</a>`}
             </div>
           </div>
         </div>
       `;
     }
 
-    function renderPlans() {
-      const currentPlan = getUserPlan();
-
-      return `
-        ${renderPublicNavbar()}
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 py-12">
-          <div class="text-center max-w-2xl mx-auto mb-12">
-            <h1 class="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">Commercial Plans</h1>
-            <p class="mt-3 text-slate-600 text-sm">Scale your barcode creation and single-sheet bulk printing.</p>
-          </div>
-
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-            <div class="bg-white p-8 rounded-3xl border-2 ${currentPlan === 'free' ? 'border-emerald-500 ring-2 ring-emerald-100 shadow-md' : 'border-slate-200'} flex flex-col justify-between">
-              <div>
-                <h3 class="font-bold text-lg text-slate-900">Starter Free</h3>
-                <div class="mt-6 flex items-baseline">
-                  <span class="text-4xl font-extrabold text-slate-900">₹0</span>
-                  <span class="text-xs text-slate-500 font-semibold ml-1">/ forever</span>
-                </div>
-                <ul class="mt-6 space-y-3 text-xs text-slate-600">
-                  <li class="flex items-center gap-2">✓ <strong>Max 5 Products</strong> in Catalog</li>
-                  <li class="flex items-center gap-2">✓ High-Scan EAN-13 Barcodes</li>
-                  <li class="flex items-center gap-2">✓ Single Label PDF Downloads</li>
-                  <li class="flex items-center gap-2">✓ Live Optical Scanner Included</li>
-                </ul>
-              </div>
-              <div class="mt-8">
-                <button disabled class="w-full py-3 rounded-xl bg-slate-100 text-slate-500 text-xs font-bold uppercase cursor-default">
-                  ${currentPlan === 'free' ? 'Active' : 'Free Tier'}
-                </button>
-              </div>
-            </div>
-
-            <div class="bg-indigo-900 text-white p-8 rounded-3xl shadow-xl flex flex-col justify-between border-2 ${currentPlan === 'business' ? 'border-amber-400 ring-4 ring-amber-300/30' : 'border-indigo-800'}">
-              <div>
-                <h3 class="font-bold text-lg text-white">Business Professional</h3>
-                <div class="mt-6 flex items-baseline">
-                  <span class="text-4xl font-extrabold text-white">₹799</span>
-                  <span class="text-xs text-indigo-300 font-semibold ml-1">/ month</span>
-                </div>
-                <ul class="mt-6 space-y-3 text-xs text-indigo-100">
-                  <li class="flex items-center gap-2">✓ <strong>Up to 100 Products</strong> in Catalog</li>
-                  <li class="flex items-center gap-2">✓ <strong>Bulk Single-Sheet Optimizer</strong> (Up to 30/sheet)</li>
-                  <li class="flex items-center gap-2">✓ Code-128, EAN-13 & QR Studio</li>
-                </ul>
-              </div>
-              <div class="mt-8">
-                ${currentPlan === 'business' ? `
-                  <button disabled class="w-full py-3 rounded-xl bg-indigo-800 text-indigo-300 text-xs font-bold uppercase cursor-default">Active</button>
-                ` : `
-                  <button onclick="startUpgrade('business', 799)" class="w-full py-3 rounded-xl bg-white hover:bg-indigo-50 text-indigo-900 text-xs font-bold shadow-lg transition">
-                    Upgrade to Business (₹799)
-                  </button>
-                `}
-              </div>
-            </div>
-
-            <div class="bg-white p-8 rounded-3xl border-2 ${currentPlan === 'professional' ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-200'} flex flex-col justify-between shadow-sm">
-              <div>
-                <h3 class="font-bold text-lg text-slate-900">Enterprise HQ</h3>
-                <div class="mt-6 flex items-baseline">
-                  <span class="text-4xl font-extrabold text-slate-900">₹1,999</span>
-                  <span class="text-xs text-slate-500 font-semibold ml-1">/ month</span>
-                </div>
-                <ul class="mt-6 space-y-3 text-xs text-slate-600">
-                  <li class="flex items-center gap-2">✓ <strong>Unlimited Products</strong></li>
-                  <li class="flex items-center gap-2">✓ <strong>Unlimited Multi-Fit Sheets</strong></li>
-                  <li class="flex items-center gap-2">✓ Dedicated Priority Support</li>
-                </ul>
-              </div>
-              <div class="mt-8">
-                ${currentPlan === 'professional' ? `
-                  <button disabled class="w-full py-3 rounded-xl bg-slate-100 text-slate-500 text-xs font-bold uppercase cursor-default">Active</button>
-                ` : `
-                  <button onclick="startUpgrade('professional', 1999)" class="w-full py-3 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold transition shadow-md">
-                    Upgrade to Enterprise (₹1,999)
-                  </button>
-                `}
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderCheckout() {
-      const plan = state.selectedPlanForCheckout || { key: 'business', title: 'Business Professional', price: 799 };
-      const qrBase64 = state.paymentData ? state.paymentData.upi_qr_base64 : '';
-
-      return `
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 py-10">
-          <div class="mb-6 flex items-center justify-between">
-            <button onclick="navigate('plans')" class="text-xs font-bold text-slate-500 hover:text-slate-800 flex items-center gap-1">
-              &larr; Back to Plans
-            </button>
-            <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold">
-              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Secure Mock Payment Sandbox Active
-            </div>
-          </div>
-
-          <div class="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden grid grid-cols-1 md:grid-cols-3">
-            <div class="p-8 bg-slate-900 text-white flex flex-col justify-between">
-              <div>
-                <span class="text-xs uppercase tracking-widest text-indigo-400 font-bold">Order Summary</span>
-                <h2 class="text-xl font-bold mt-1 text-white">${plan.title}</h2>
-                <div class="mt-6 text-3xl font-extrabold text-white">₹${plan.price.toFixed(2)}</div>
-                <p class="text-xs text-slate-400 mt-1">Instant simulated activation</p>
-              </div>
-
-              <div class="text-[11px] text-slate-400 bg-slate-800/60 p-3 rounded-xl mt-8">
-                ℹ <strong>Sandbox Mode:</strong> Click confirmation below to upgrade entitlements instantly.
-              </div>
-            </div>
-
-            <div class="md:col-span-2 p-8">
-              <div class="flex border-b border-slate-200 mb-6">
-                <button onclick="state.activePaymentTab = 'upi'; render();" class="pb-3 px-4 text-xs font-bold uppercase tracking-wider border-b-2 transition ${state.activePaymentTab === 'upi' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-700'}">
-                  UPI & QR Code (Amount Locked)
-                </button>
-                <button onclick="state.activePaymentTab = 'netbanking'; render();" class="pb-3 px-4 text-xs font-bold uppercase tracking-wider border-b-2 transition ${state.activePaymentTab === 'netbanking' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-700'}">
-                  Net Banking
-                </button>
-              </div>
-
-              ${state.activePaymentTab === 'upi' ? `
-                <div class="flex flex-col items-center text-center">
-                  <div class="p-4 bg-white border-2 border-dashed border-slate-300 rounded-2xl shadow-sm mb-4">
-                    ${qrBase64 ? `
-                      <img src="data:image/png;base64,${qrBase64}" class="w-44 h-44 object-contain mx-auto" alt="UPI QR">
-                    ` : `
-                      <div class="w-44 h-44 flex items-center justify-center text-xs text-slate-400">Loading Locked QR...</div>
-                    `}
-                  </div>
-                  <div class="text-xs text-slate-500 mb-4">
-                    Amount is pre-filled & locked to <strong class="text-slate-900">₹${plan.price}</strong> on scan.
-                  </div>
-                  <button onclick="triggerMockPayment()" class="w-full py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-lg shadow-indigo-100 transition">
-                    Simulate Successful QR Payment (₹${plan.price})
-                  </button>
-                </div>
-              ` : `
-                <div class="space-y-4">
-                  <div class="grid grid-cols-2 gap-3">
-                    ${['HDFC Bank', 'ICICI Bank', 'State Bank of India', 'Axis Bank', 'Kotak Mahindra Bank', 'Punjab National Bank'].map(b => `
-                      <label class="p-3 border rounded-xl flex items-center gap-2 cursor-pointer transition text-xs font-semibold ${state.selectedBank === b ? 'border-indigo-600 bg-indigo-50/50 text-indigo-900' : 'border-slate-200 text-slate-700'}">
-                        <input type="radio" name="bank_choice" ${state.selectedBank === b ? 'checked' : ''} onchange="state.selectedBank = '${b}'; render();" class="text-indigo-600">
-                        ${b}
-                      </label>
-                    `).join('')}
-                  </div>
-                  <div class="pt-4">
-                    <button onclick="triggerMockPayment()" class="w-full py-3.5 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shadow-lg transition">
-                      Authorize Net Banking Transfer
-                    </button>
-                  </div>
-                </div>
-              `}
-            </div>
-          </div>
-        </div>
-      `;
-    }
 
     function renderAdminHQ() {
       const data = state.adminOverview;
@@ -3269,160 +2980,53 @@ SPA_HTML = """<!DOCTYPE html>
         return `
           <div class="p-16 flex flex-col items-center justify-center space-y-4 text-center">
             <div class="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-            <div class="text-sm font-semibold text-slate-600">Fetching SaaS Master Data...</div>
+            <div class="text-sm font-semibold text-slate-600">Loading administration data...</div>
             <button onclick="loadAdminOverview()" class="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-black">Retry</button>
           </div>
         `;
       }
-
-      const st = data.stats || { total_tenants: 0, total_users: 0, total_catalog_products: 0, estimated_mrr: 0, plans: {} };
-      const cfg = data.pricing_config || { business_price: 799, professional_price: 1999 };
+      const st = data.stats || { total_tenants: 0, total_users: 0, total_catalog_products: 0 };
       const customers = data.customers || [];
-
       return `
         <div class="max-w-7xl mx-auto space-y-8">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-xs font-bold text-amber-800 mb-2">
                 <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-                Master Control Center & Multi-Tenant Management
+                Master Control Center
               </div>
-              <h1 class="text-2xl font-extrabold text-slate-900">SaaS Administration & Tenants</h1>
-              <p class="text-xs text-slate-500 mt-0.5">Manage all registered businesses, upgrade customer plans, ban accounts, and update platform pricing.</p>
+              <h1 class="text-2xl font-extrabold text-slate-900">Administration & Business Directory</h1>
+              <p class="text-xs text-slate-500 mt-0.5">Manage registered businesses, user access, and product catalogs.</p>
             </div>
-            <button onclick="loadAdminOverview()" class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold transition flex items-center gap-2">
-              🔄 Refresh Analytics
-            </button>
+            <button onclick="loadAdminOverview()" class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold transition flex items-center gap-2">🔄 Refresh</button>
           </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-4 gap-6">
-            <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm">
-              <span class="text-slate-400 text-xs font-semibold uppercase">Total Businesses</span>
-              <div class="text-3xl font-extrabold text-slate-900 mt-2">${st.total_tenants}</div>
-              <div class="text-xs text-slate-400 mt-2 font-medium">${st.total_users} Total Active User Logins</div>
-            </div>
-
-            <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm">
-              <span class="text-slate-400 text-xs font-semibold uppercase">Estimated MRR</span>
-              <div class="text-3xl font-extrabold text-emerald-600 mt-2">₹${(st.estimated_mrr || 0).toLocaleString('en-IN')}</div>
-              <div class="text-xs text-slate-400 mt-2 font-medium">Monthly recurring subscription value</div>
-            </div>
-
-            <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm">
-              <span class="text-slate-400 text-xs font-semibold uppercase">Total Hosted Catalog</span>
-              <div class="text-3xl font-extrabold text-indigo-600 mt-2">${st.total_catalog_products} SKUs</div>
-              <div class="text-xs text-slate-400 mt-2 font-medium">100% GS1 EAN-13 Indexed</div>
-            </div>
-
-            <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm">
-              <span class="text-slate-400 text-xs font-semibold uppercase">Plan Breakdown</span>
-              <div class="text-xs space-y-1 mt-2 font-bold text-slate-700">
-                <div class="flex justify-between"><span>Free:</span> <span class="text-slate-900">${st.plans.free || 0}</span></div>
-                <div class="flex justify-between"><span>Business:</span> <span class="text-indigo-600">${st.plans.business || 0}</span></div>
-                <div class="flex justify-between"><span>Enterprise:</span> <span class="text-emerald-600">${st.plans.professional || 0}</span></div>
-              </div>
-            </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-6">
+            <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm"><span class="text-slate-400 text-xs font-semibold uppercase">Total Businesses</span><div class="text-3xl font-extrabold text-slate-900 mt-2">${st.total_tenants}</div></div>
+            <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm"><span class="text-slate-400 text-xs font-semibold uppercase">Registered Users</span><div class="text-3xl font-extrabold text-indigo-600 mt-2">${st.total_users}</div></div>
+            <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm"><span class="text-slate-400 text-xs font-semibold uppercase">Catalog Products</span><div class="text-3xl font-extrabold text-emerald-600 mt-2">${st.total_catalog_products}</div></div>
           </div>
-
-          <div class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden space-y-4 p-6 sm:p-8">
-            <div class="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div>
-                <h3 class="font-extrabold text-base text-slate-900">Registered SaaS Customers (${customers.length})</h3>
-                <p class="text-xs text-slate-500 mt-0.5">Change client plans on the fly or restrict compromised accounts.</p>
-              </div>
-            </div>
-
-            <div class="overflow-x-auto">
-              <table class="w-full text-left text-sm">
-                <thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase font-semibold">
-                  <tr>
-                    <th class="px-4 py-3">Business / Brand</th>
-                    <th class="px-4 py-3">Owner Contact</th>
-                    <th class="px-4 py-3">Current Plan</th>
-                    <th class="px-4 py-3">Catalog Size</th>
-                    <th class="px-4 py-3">Status</th>
-                    <th class="px-4 py-3 text-right">Admin Controls</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  ${customers.map(c => `
-                    <tr class="hover:bg-slate-50/70 transition">
-                      <td class="px-4 py-4">
-                        <div class="font-extrabold text-slate-900">${c.business_name}</div>
-                        <div class="text-[11px] text-slate-400">Joined ${c.created_at}</div>
-                      </td>
-                      <td class="px-4 py-4">
-                        <div class="font-semibold text-slate-800 text-xs">${c.owner_name}</div>
-                        <div class="text-xs text-slate-500 font-mono">${c.owner_email}</div>
-                      </td>
-                      <td class="px-4 py-4">
-                        <select onchange="adminChangeCustomerPlan(${c.business_id}, this.value)" class="text-xs font-bold rounded-lg px-2.5 py-1.5 border border-slate-200 bg-white focus:ring-2 focus:ring-amber-500">
-                          <option value="free" ${c.plan === 'free' ? 'selected' : ''}>Free Tier</option>
-                          <option value="business" ${c.plan === 'business' ? 'selected' : ''}>Business (₹799)</option>
-                          <option value="professional" ${c.plan === 'professional' ? 'selected' : ''}>Enterprise (₹1,999)</option>
-                          <option value="lifetime_unlimited" ${c.plan === 'lifetime_unlimited' ? 'selected' : ''}>Lifetime Unlimited</option>
-                        </select>
-                      </td>
-                      <td class="px-4 py-4">
-                        <span class="font-mono text-xs font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">${c.products_count} items</span>
-                      </td>
-                      <td class="px-4 py-4">
-                        <span class="px-2.5 py-1 rounded-full text-[11px] font-extrabold ${c.is_suspended ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}">
-                          ${c.is_suspended ? 'Banned / Suspended' : 'Active'}
-                        </span>
-                      </td>
-                      <td class="px-4 py-4 text-right space-x-2">
-                        ${c.owner_email !== DEFAULT_ADMIN_EMAIL ? `
-                          <button onclick="adminToggleSuspend(${c.owner_id}, ${c.is_suspended})" class="px-3 py-1 rounded-lg text-xs font-bold transition ${c.is_suspended ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}">
-                            ${c.is_suspended ? 'Reactivate' : 'Suspend'}
-                          </button>
-                          <button onclick="adminDeleteTenant(${c.business_id}, '${c.business_name}')" class="px-3 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-bold transition">
-                            Delete
-                          </button>
-                        ` : `
-                          <span class="text-[11px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-md">Root Tenant</span>
-                        `}
-                      </td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 sm:p-8 space-y-4">
-            <div>
-              <h3 class="font-extrabold text-base text-slate-900">SaaS Plan Pricing Settings</h3>
-              <p class="text-xs text-slate-500 mt-0.5">Control commercial pricing shown on the public landing page & checkout simulator.</p>
-            </div>
-
-            <form onsubmit="adminSavePricing(event)" class="grid grid-cols-1 sm:grid-cols-3 gap-6 pt-2">
-              <div>
-                <label class="block text-xs font-semibold text-slate-700 mb-1">Starter Free Tier (₹)</label>
-                <input type="number" disabled value="0" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-100 text-slate-500 font-bold text-sm cursor-not-allowed text-center">
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-slate-700 mb-1">Business Plan Price (₹/mo)</label>
-                <input id="admBizPrice" type="number" required value="${cfg.business_price || 799}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 font-bold text-sm focus:ring-2 focus:ring-amber-500 text-center">
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-slate-700 mb-1">Enterprise HQ Price (₹/mo)</label>
-                <input id="admProPrice" type="number" required value="${cfg.professional_price || 1999}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 font-bold text-sm focus:ring-2 focus:ring-amber-500 text-center">
-              </div>
-              <div class="sm:col-span-3 flex justify-end">
-                <button type="submit" class="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-md transition">
-                  Update Platform Pricing
-                </button>
-              </div>
-            </form>
+          <div class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden p-6 sm:p-8">
+            <div class="pb-4 border-b border-slate-100 mb-4"><h3 class="font-extrabold text-base text-slate-900">Registered Businesses (${customers.length})</h3><p class="text-xs text-slate-500 mt-1">Review business details, suspend access, or remove a business.</p></div>
+            <div class="overflow-x-auto"><table class="w-full text-left text-sm">
+              <thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase font-semibold"><tr><th class="px-4 py-3">Business / Brand</th><th class="px-4 py-3">Owner Contact</th><th class="px-4 py-3">Catalog Size</th><th class="px-4 py-3">Status</th><th class="px-4 py-3 text-right">Admin Controls</th></tr></thead>
+              <tbody class="divide-y divide-slate-100">${customers.map(c => `
+                <tr class="hover:bg-slate-50/70 transition">
+                  <td class="px-4 py-4"><div class="font-extrabold text-slate-900">${c.business_name}</div><div class="text-[11px] text-slate-400">Joined ${c.created_at}</div></td>
+                  <td class="px-4 py-4"><div class="font-semibold text-slate-800 text-xs">${c.owner_name}</div><div class="text-xs text-slate-500 font-mono">${c.owner_email}</div></td>
+                  <td class="px-4 py-4"><span class="font-mono text-xs font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">${c.products_count} items</span></td>
+                  <td class="px-4 py-4"><span class="px-2.5 py-1 rounded-full text-[11px] font-extrabold ${c.is_suspended ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}">${c.is_suspended ? 'Suspended' : 'Active'}</span></td>
+                  <td class="px-4 py-4 text-right space-x-2">${c.owner_email !== 'admin@lableforge.com' ? `
+                    <button onclick="adminToggleSuspend(${c.owner_id}, ${c.is_suspended})" class="px-3 py-1 rounded-lg text-xs font-bold transition ${c.is_suspended ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}">${c.is_suspended ? 'Reactivate' : 'Suspend'}</button>
+                    <button onclick="adminDeleteTenant(${c.business_id}, '${c.business_name}')" class="px-3 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-bold transition">Delete</button>
+                  ` : '<span class="text-[11px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-md">Root Business</span>'}</td>
+                </tr>`).join('')}</tbody>
+            </table></div>
           </div>
         </div>
       `;
     }
 
-    // ==========================================
     // DISPATCHER
-    // ==========================================
     function render() {
       const root = document.getElementById('appRoot');
       if (!root) return;
@@ -3436,8 +3040,6 @@ SPA_HTML = """<!DOCTYPE html>
       if (!state.token) {
         if (state.view === 'auth') {
           root.innerHTML = renderAuth();
-        } else if (state.view === 'plans') {
-          root.innerHTML = renderPlans();
         } else {
           state.view = 'landing';
           root.innerHTML = renderLanding();
@@ -3455,8 +3057,6 @@ SPA_HTML = """<!DOCTYPE html>
       else if (state.view === 'labels') contentHtml = renderLabelDesigner();
       else if (state.view === 'scanner') contentHtml = renderScanner();
       else if (state.view === 'settings') contentHtml = renderSettings();
-      else if (state.view === 'plans') contentHtml = renderPlans();
-      else if (state.view === 'checkout') contentHtml = renderCheckout();
       else contentHtml = renderDashboard();
 
       root.innerHTML = renderAppShell(contentHtml);
