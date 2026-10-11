@@ -48,6 +48,7 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Chopraji995#")
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./labelforge.db")
+GA_MEASUREMENT_ID = os.getenv("GA_MEASUREMENT_ID", "").strip()
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -324,7 +325,7 @@ class BarcodeEngine:
 # ==========================================
 # 4. REST APIS & FASTAPI
 # ==========================================
-app = FastAPI(title="LabelForge Pro Engine", version="8.9.2")
+app = FastAPI(title="Easy Barcode Engine", version="8.9.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -477,7 +478,7 @@ def verify_product_page(barcode_num: str, db: Session = Depends(get_db)):
             <div class="w-16 h-16 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto text-2xl mb-4 font-bold">✕</div>
             <h1 class="text-xl font-extrabold text-slate-900">Unverified Barcode</h1>
             <p class="text-xs text-slate-500 mt-2 font-mono">{clean_code}</p>
-            <p class="text-xs text-slate-600 mt-4 leading-relaxed">This item was not found in the verified LabelForge registry.</p>
+            <p class="text-xs text-slate-600 mt-4 leading-relaxed">This item was not found in the verified Easy Barcode registry.</p>
           </div>
         </body></html>
         """, status_code=404)
@@ -487,6 +488,19 @@ def verify_product_page(barcode_num: str, db: Session = Depends(get_db)):
     <!DOCTYPE html>
     <html lang="en">
     <head>
+    
+<!-- Google Analytics 4 -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC1234567"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+
+    function gtag() 
+        dataLayer.push(arguments);
+
+  gtag('js', new Date());
+  gtag('config', 'G-ABC1234567');
+</script>
+
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Verified Product — {prod.name}</title>
@@ -524,7 +538,7 @@ def verify_product_page(barcode_num: str, db: Session = Depends(get_db)):
           </div>
         </div>
         <div class="text-center pt-2">
-          <span class="text-[10px] text-slate-400 font-medium">Secured by LabelForge GS1 Infrastructure</span>
+          <span class="text-[10px] text-slate-400 font-medium">Secured by Easy Barcode GS1 Infrastructure</span>
         </div>
       </div>
     </body>
@@ -1002,7 +1016,7 @@ SPA_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LabelForge — Enterprise Retail Barcode & SaaS Suite</title>
+  <title>Easy Barcode — Barcode & Label Generator</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -1078,6 +1092,13 @@ SPA_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+    // Google Analytics custom events (no-op when GA4 is not configured).
+    function trackAnalyticsEvent(eventName, params = {}) {
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', eventName, params);
+      }
+    }
+
     // Direct Browser Print Utility
     function printElementHtml(htmlContent, title = "Print Job") {
       const existingIframe = document.getElementById('lfPrintFrame');
@@ -1561,6 +1582,7 @@ SPA_HTML = """<!DOCTYPE html>
           throw new Error(errDetail || "Barcode generation error");
         }
         state.barcodeSvg = await res.text();
+        trackAnalyticsEvent('barcode_generated', { barcode_type: symbology });
         const box = document.getElementById('bcStudioBox');
         if (box) box.innerHTML = state.barcodeSvg;
         const errEl = document.getElementById('bcStudioErr');
@@ -1623,7 +1645,7 @@ SPA_HTML = """<!DOCTYPE html>
 
     function generateDynamicLabelMarkup(p, isPrintMode) {
       if (!p) return '<div class="text-slate-400 text-xs text-center">No product selected</div>';
-      const bizName = (state.user && state.user.business_name) ? state.user.business_name : 'LabelForge Pro';
+      const bizName = (state.user && state.user.business_name) ? state.user.business_name : 'Easy Barcode Pro';
 
       const pxW = Math.max(120, state.dimWidth * 3.77);
       const pxH = Math.max(80, state.dimHeight * 3.77);
@@ -1661,6 +1683,7 @@ SPA_HTML = """<!DOCTYPE html>
         </div>
       `;
       printElementHtml(printHtml, `Barcode_${p.sku}`);
+      trackAnalyticsEvent('barcode_printed');
     }
 
     async function printCurrentLabelDirectly() {
@@ -1671,6 +1694,7 @@ SPA_HTML = """<!DOCTYPE html>
 
       const labelMarkup = generateDynamicLabelMarkup(p, true);
       printElementHtml(labelMarkup, `Label_${p.sku}`);
+      trackAnalyticsEvent('label_printed');
     }
 
     async function downloadBarcodePdf() {
@@ -1698,6 +1722,7 @@ SPA_HTML = """<!DOCTYPE html>
       a.href = url;
       a.download = `barcode_${p.sku}.pdf`;
       a.click();
+      trackAnalyticsEvent('generated_file_downloaded', { file_type: 'barcode_pdf' });
     }
 
     async function downloadLabelPdf() {
@@ -1709,7 +1734,7 @@ SPA_HTML = """<!DOCTYPE html>
         items: [{
           title: p.name,
           mrp: `₹${p.mrp.toFixed(2)}`,
-          biz: state.user ? state.user.business_name : 'LabelForge',
+          biz: state.user ? state.user.business_name : 'Easy Barcode',
           sku: p.sku,
           batch: p.batch_number,
           svg: state.currentSvg,
@@ -1734,6 +1759,8 @@ SPA_HTML = """<!DOCTYPE html>
       a.href = url;
       a.download = `label_${p.sku}.pdf`;
       a.click();
+      trackAnalyticsEvent('label_generated', { output_type: 'pdf' });
+      trackAnalyticsEvent('generated_file_downloaded', { file_type: 'label_pdf' });
     }
 
     async function downloadBulkSingleSheet() {
@@ -1745,7 +1772,7 @@ SPA_HTML = """<!DOCTYPE html>
       const singleItem = {
         title: p.name,
         mrp: `₹${p.mrp.toFixed(2)}`,
-        biz: state.user ? state.user.business_name : 'LabelForge',
+        biz: state.user ? state.user.business_name : 'Easy Barcode',
         sku: p.sku,
         batch: p.batch_number,
         svg: state.currentSvg,
@@ -1777,6 +1804,8 @@ SPA_HTML = """<!DOCTYPE html>
       a.href = url;
       a.download = `bulk_sheet_${p.sku}_x${count}.pdf`;
       a.click();
+      trackAnalyticsEvent('label_generated', { output_type: 'bulk_pdf' });
+      trackAnalyticsEvent('generated_file_downloaded', { file_type: 'bulk_label_pdf' });
     }
 
     async function performScanLookup() {
@@ -1939,7 +1968,7 @@ SPA_HTML = """<!DOCTYPE html>
           labels: ['10mm', '20mm', '30mm', '40mm', '50mm', '76mm'],
           datasets: [
             {
-              label: 'LabelForge GS1 Vector (%)',
+              label: 'Easy Barcode GS1 Vector (%)',
               data: [99.2, 99.7, 99.9, 100, 100, 100],
               borderColor: '#4f46e5',
               backgroundColor: 'rgba(79, 70, 229, 0.1)',
@@ -1983,7 +2012,7 @@ SPA_HTML = """<!DOCTYPE html>
               borderRadius: 6
             },
             {
-              label: 'LabelForge Vector Engine',
+              label: 'Easy Barcode Vector Engine',
               data: [420, 310, 0, 850],
               backgroundColor: '#10b981',
               borderRadius: 6
@@ -2018,10 +2047,10 @@ SPA_HTML = """<!DOCTYPE html>
         <header class="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-200">
           <div class="max-w-7xl mx-auto px-4 sm:px-6 h-18 py-3 flex items-center justify-between">
             <div class="flex items-center gap-3 cursor-pointer" onclick="navigate('landing')">
-              <div class="h-10 w-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-violet-600 flex items-center justify-center text-white shadow-md shadow-indigo-300 font-extrabold text-base">LF</div>
+              <div class="h-10 w-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-violet-600 flex items-center justify-center text-white shadow-md shadow-indigo-300 font-extrabold text-base">EB</div>
               <div>
-                <span class="font-extrabold text-xl text-slate-900 tracking-tight leading-none block">Label<span class="text-indigo-600">Forge</span></span>
-                <span class="text-[9px] uppercase tracking-widest text-slate-400 font-bold">Enterprise GS1 Engine</span>
+                <span class="font-extrabold text-xl text-slate-900 tracking-tight leading-none block">Easy <span class="text-indigo-600">Barcode</span></span>
+                <span class="text-[9px] uppercase tracking-widest text-slate-400 font-bold">Easy Barcode Platform</span>
               </div>
             </div>
 
@@ -2161,7 +2190,7 @@ SPA_HTML = """<!DOCTYPE html>
                 <div class="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm flex flex-col justify-between">
                   <div>
                     <span class="text-xs uppercase tracking-wider font-extrabold text-emerald-600">Material Efficiency</span>
-                    <h3 class="text-lg font-bold text-slate-900 mt-1">Cost Reductions: Legacy vs. LabelForge</h3>
+                    <h3 class="text-lg font-bold text-slate-900 mt-1">Cost Reductions: Legacy vs. Easy Barcode</h3>
                   </div>
                   <div class="h-72 w-full relative">
                     <canvas id="landingCostSavingsChart"></canvas>
@@ -2218,7 +2247,7 @@ SPA_HTML = """<!DOCTYPE html>
             <div class="max-w-6xl mx-auto px-4 sm:px-6">
               <div class="text-center max-w-2xl mx-auto mb-12">
                 <span class="text-xs uppercase font-extrabold tracking-widest text-indigo-600 block mb-2">Executive Leadership</span>
-                <h2 class="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">The Vision Behind LabelForge</h2>
+                <h2 class="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">The Vision Behind Easy Barcode</h2>
               </div>
 
               <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
@@ -2238,11 +2267,11 @@ SPA_HTML = """<!DOCTYPE html>
                       </div>
                     </div>
                     <p class="text-xs text-slate-700 leading-relaxed">
-                      Sidharth Chopra is the dynamic 14-year-old CEO driving LabelForge’s product architecture and technical innovation. Combining core software engineering with automated retail workflows, Sidharth engineered the high-precision vector engine to eliminate barcode read failures and bring frictionless catalog labeling to modern digital commerce.
+                      Sidharth Chopra is the dynamic 14-year-old CEO driving Easy Barcode’s product architecture and technical innovation. Combining core software engineering with automated retail workflows, Sidharth engineered the high-precision vector engine to eliminate barcode read failures and bring frictionless catalog labeling to modern digital commerce.
                     </p>
                   </div>
                   <div class="pt-6 border-t border-slate-200/60 mt-6 text-[11px] font-mono text-slate-400">
-                    Chief Executive Officer // LabelForge Pro Suite
+                    Chief Executive Officer // Easy Barcode Pro Suite
                   </div>
                 </div>
 
@@ -2262,7 +2291,7 @@ SPA_HTML = """<!DOCTYPE html>
                       </div>
                     </div>
                     <p class="text-xs text-slate-700 leading-relaxed">
-                      Sunil Chopra is the Founder of LabelForge, providing strategic direction, industry insight, and commercial guidance. With deep expertise across trade, business operations, and enterprise execution, Sunil spearheads the company’s mission to build scalable retail infrastructure and empower businesses with dependable GS1 standard technology.
+                      Sunil Chopra is the Founder of Easy Barcode, providing strategic direction, industry insight, and commercial guidance. With deep expertise across trade, business operations, and enterprise execution, Sunil spearheads the company’s mission to build scalable retail infrastructure and empower businesses with dependable GS1 standard technology.
                     </p>
                   </div>
                   <div class="pt-6 border-t border-slate-200/60 mt-6 text-[11px] font-mono text-slate-400">
@@ -2276,10 +2305,10 @@ SPA_HTML = """<!DOCTYPE html>
           <footer class="bg-slate-950 text-slate-400 py-16 text-xs">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row justify-between items-center gap-6">
               <div class="flex items-center gap-3">
-                <div class="h-8 w-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-extrabold text-sm">LF</div>
-                <span class="text-white font-extrabold text-base">LabelForge Technologies</span>
+                <div class="h-8 w-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-extrabold text-sm">EB</div>
+                <span class="text-white font-extrabold text-base">Easy Barcode Technologies</span>
               </div>
-              <p class="text-center sm:text-right">&copy; 2026 LabelForge Pro Suite. Engineered for Modern E-Commerce & Retail.</p>
+              <p class="text-center sm:text-right">&copy; 2026 Easy Barcode Pro Suite. Engineered for Modern E-Commerce & Retail.</p>
             </div>
           </footer>
         </div>
@@ -2309,7 +2338,7 @@ SPA_HTML = """<!DOCTYPE html>
                 ${isSuper ? 'HQ' : 'LF'}
               </div>
               <div>
-                <span class="font-extrabold text-lg text-white tracking-tight">Label<span class="${isSuper ? 'text-amber-400' : 'text-indigo-400'}">Forge</span></span>
+                <span class="font-extrabold text-lg text-white tracking-tight">Easy <span class="${isSuper ? 'text-amber-400' : 'text-indigo-400'}">Barcode</span></span>
                 <span class="block text-[10px] text-slate-400 font-semibold tracking-wide uppercase">${isSuper ? 'SaaS Control Hub' : 'Workspace Pro'}</span>
               </div>
             </div>
@@ -2784,7 +2813,7 @@ SPA_HTML = """<!DOCTYPE html>
     }
 
     function renderSettings() {
-      const bizName = state.user && state.user.business_name ? state.user.business_name : 'LabelForge Studios';
+      const bizName = state.user && state.user.business_name ? state.user.business_name : 'Easy Barcode Studios';
       const prefix = state.user && state.user.sku_prefix ? state.user.sku_prefix : 'PRD';
       const padding = state.user && state.user.sku_padding ? state.user.sku_padding : 6;
 
@@ -2893,10 +2922,10 @@ SPA_HTML = """<!DOCTYPE html>
       return `
         <div class="min-h-screen flex flex-col items-center justify-center px-4 py-12 bg-slate-100">
           <div class="flex items-center gap-3 cursor-pointer mb-8" onclick="navigate('landing')">
-            <div class="h-11 w-11 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-300 font-extrabold text-lg">LF</div>
+            <div class="h-11 w-11 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-300 font-extrabold text-lg">EB</div>
             <div>
-              <span class="font-extrabold text-2xl text-slate-900 tracking-tight leading-none block">Label<span class="text-indigo-600">Forge</span></span>
-              <span class="text-[9px] uppercase tracking-widest text-slate-400 font-bold">Enterprise GS1 Engine</span>
+              <span class="font-extrabold text-2xl text-slate-900 tracking-tight leading-none block">Easy <span class="text-indigo-600">Barcode</span></span>
+              <span class="text-[9px] uppercase tracking-widest text-slate-400 font-bold">Easy Barcode Platform</span>
             </div>
           </div>
 
@@ -3105,7 +3134,20 @@ SPA_HTML = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 def index_spa():
-    return HTMLResponse(content=SPA_HTML)
+    html = SPA_HTML
+    if re.fullmatch(r"G-[A-Z0-9]+", GA_MEASUREMENT_ID):
+        google_tag = f'''
+  <!-- Google Analytics 4 -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id={GA_MEASUREMENT_ID}"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() {{ window.dataLayer.push(arguments); }}
+    gtag('js', new Date());
+    gtag('config', '{GA_MEASUREMENT_ID}');
+  </script>
+'''
+        html = html.replace("</head>", google_tag + "\n</head>", 1)
+    return HTMLResponse(content=html)
 
 
 if __name__ == "__main__":
@@ -3113,3 +3155,4 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="127.0.0.1", port=port)
+
