@@ -2445,6 +2445,7 @@ SPA_HTML = f"""<!DOCTYPE html>
       `;
     }}
 
+
     function renderAppShell(contentHtml) {{
       const plan = getUserPlan();
       const isSuper = isSuperAdmin();
@@ -2465,7 +2466,7 @@ SPA_HTML = f"""<!DOCTYPE html>
           <aside class="w-64 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0 border-r border-slate-800 z-30">
             <div class="p-5 flex items-center gap-3 border-b border-slate-800 cursor-pointer" onclick="navigate('${{isSuper ? 'admin_hq' : 'dashboard'}}')">
               <div class="h-10 w-10 rounded-2xl ${{isSuper ? 'bg-amber-500' : 'bg-indigo-600'}} flex items-center justify-center text-white font-extrabold shadow-md text-sm">
-                ${{isSuper ? 'HQ' : 'LF'}}
+                ${{isSuper ? 'HQ' : 'EB'}}
               </div>
               <div>
                 <span class="font-extrabold text-lg text-white tracking-tight">Easy <span class="${{isSuper ? 'text-amber-400' : 'text-indigo-400'}}">Barcode</span></span>
