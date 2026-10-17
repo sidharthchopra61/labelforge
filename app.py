@@ -3158,27 +3158,18 @@ SPA_HTML = f"""<!DOCTYPE html>
             </div>
           </div>
 
-          <!-- ANALYTICS CHARTS ROW -->
-          <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div class="lg:col-span-2 bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm">
-              <div class="flex items-center justify-between mb-4">
-                <div>
-                  <h3 class="text-sm font-bold text-slate-900">Traffic & Barcode Event Velocity</h3>
-                  <p class="text-xs text-slate-400">Weekly session traffic compared to active barcode generation actions.</p>
-                </div>
-              </div>
-              <div class="h-64 relative">
-                <canvas id="adminTrafficChart"></canvas>
-              </div>
+          <!-- LIVE GOOGLE ANALYTICS REPORT -->
+          <div class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden p-6 sm:p-8">
+            <div class="pb-4 border-b border-slate-100 mb-4">
+              <h3 class="font-extrabold text-base text-slate-900">Live Google Analytics Portal</h3>
+              <p class="text-xs text-slate-500 mt-1">Real-time telemetry fed directly from GA4 property G-EPDN2Y0SYD.</p>
             </div>
-
-            <div class="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm">
-              <h3 class="text-sm font-bold text-slate-900 mb-1">Device Breakdown</h3>
-              <p class="text-xs text-slate-400 mb-4">Client environment distribution.</p>
-              <div class="h-64 relative">
-                <canvas id="adminDeviceChart"></canvas>
-              </div>
-            </div>
+            <iframe 
+              src="<iframe width="600" height="450" src="https://datastudio.google.com/embed/reporting/f03d0439-6b71-419b-8534-6e61f1277783/page/SfVBG" frameborder="0" style="border:0" allowfullscreen sandbox="allow-storage-access-by-user-activation allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>" 
+              frameborder="0" 
+              style="border:0; width: 100%; height: 600px; border-radius: 1rem;" 
+              allowfullscreen>
+            </iframe>
           </div>
 
           <!-- GA4 EVENTS OCCURRENCE TABLE -->
