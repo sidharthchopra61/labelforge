@@ -136,9 +136,11 @@ class Category(Base):
 
     business = relationship("Business", back_populates="categories")
 
+
 class TelemetryLogSchema(BaseModel):
     event_name: str
     details: Optional[str] = ""
+
 
 class SystemTelemetry(Base):
     __tablename__ = "system_telemetry"
@@ -147,7 +149,6 @@ class SystemTelemetry(Base):
     details = Column(String(255), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
-Base.metadata.create_all(bind=engine)
 
 class SystemSetting(Base):
     __tablename__ = "system_settings"
@@ -401,13 +402,13 @@ class AdminToggleUserSuspendSchema(BaseModel):
     is_suspended: bool
 
 
-# Category Endpoints
 @app.post("/api/telemetry/log")
 def log_telemetry_hit(data: TelemetryLogSchema, db: Session = Depends(get_db)):
     record = SystemTelemetry(event_name=data.event_name, details=data.details or "")
     db.add(record)
     db.commit()
     return {"status": "ok"}
+
 
 @app.get("/api/categories")
 def get_categories(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -477,7 +478,6 @@ def public_barcode_lookup(barcode_num: str, db: Session = Depends(get_db)):
     }
 
 
-# Standalone Public Verification Page
 @app.get("/verify/{barcode_num}", response_class=HTMLResponse)
 def verify_product_page(barcode_num: str, db: Session = Depends(get_db)):
     clean_code = re.sub(r'[\s-]', '', barcode_num.strip())
@@ -1159,11 +1159,11 @@ SPA_HTML = f"""<!DOCTYPE html>
 
   <script>
     // Google Analytics custom events (reporting directly to G-EPDN2Y0SYD)
-        function trackAnalyticsEvent(eventName, params = {{}}) {{
-          if (typeof window.gtag === 'function') {{
-            window.gtag('event', eventName, params);
-          }}
-        }}
+    function trackAnalyticsEvent(eventName, params = {{}}) {{
+      if (typeof window.gtag === 'function') {{
+        window.gtag('event', eventName, params);
+      }}
+    }}
 
     // Direct Browser Print Utility
     function printElementHtml(htmlContent, title = "Print Job") {{
@@ -1255,6 +1255,7 @@ SPA_HTML = f"""<!DOCTYPE html>
     }};
 
     let state = {{
+      sidebarOpen: true,
       view: 'landing',
       navHistory: [],
       token: null,
@@ -1282,6 +1283,11 @@ SPA_HTML = f"""<!DOCTYPE html>
       adminOverview: null,
       adminAnalytics: null
     }};
+
+    function toggleSidebar() {{
+      state.sidebarOpen = !state.sidebarOpen;
+      render();
+    }}
 
     try {{
       state.token = localStorage.getItem('token') || null;
@@ -1717,11 +1723,10 @@ SPA_HTML = f"""<!DOCTYPE html>
       const pxH = Math.max(80, state.dimHeight * 3.77);
 
       return `
-        <div style="width: ${{pxW}}px; height: ${{pxH}}px;" class="bg-white border-2 border-slate-300 rounded-xl p-3 shadow-sm flex flex-col justify-between items-center text-center overflow-hidden select-none mx-auto">
+        <div style="width: ${{pxW}}px; height:${{pxH}}px;" class="bg-white border-2 border-slate-300 rounded-xl p-3 shadow-sm flex flex-col justify-between items-center text-center overflow-hidden select-none mx-auto">
           <div class="w-full flex flex-col items-center">
             ${{state.options.showBiz ? `<div class="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest leading-tight truncate w-full">${{bizName}}</div>` : ''}}
-            <div class="text-xs font-bold text-slate-900 leading-tight mt-0.5 truncate w-full">${{p.name}}</div>
-            ${{state.options.showMrp ? `<div class="text-xs font-extrabold text-indigo-700 leading-tight mt-0.5 w-full">MRP: ₹${{p.mrp.toFixed(2)}}</div>` : ''}}
+            <div class="text-xs font-bold text-slate-900 leading-tight mt-0.5 truncate w-full">${{p.name}}</div>${{state.options.showMrp ? `<div class="text-xs font-extrabold text-indigo-700 leading-tight mt-0.5 w-full">MRP: ₹${{p.mrp.toFixed(2)}}</div>` : ''}}
             <div class="flex items-center justify-center gap-2 text-[9px] text-slate-500 font-mono mt-0.5 w-full">
               ${{state.options.showSku ? `<span>SKU: ${{p.sku}}</span>` : ''}}
               ${{state.options.showBatch ? `<span>• BATCH: ${{p.batch_number || 'B-REG'}}</span>` : ''}}
@@ -2445,7 +2450,6 @@ SPA_HTML = f"""<!DOCTYPE html>
       `;
     }}
 
-
     function renderAppShell(contentHtml) {{
       const plan = getUserPlan();
       const isSuper = isSuperAdmin();
@@ -2463,45 +2467,58 @@ SPA_HTML = f"""<!DOCTYPE html>
 
       return `
         <div class="flex h-screen overflow-hidden bg-slate-50">
-          <aside class="w-64 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0 border-r border-slate-800 z-30">
-            <div class="p-5 flex items-center gap-3 border-b border-slate-800 cursor-pointer" onclick="navigate('${{isSuper ? 'admin_hq' : 'dashboard'}}')">
-              <div class="h-10 w-10 rounded-2xl ${{isSuper ? 'bg-amber-500' : 'bg-indigo-600'}} flex items-center justify-center text-white font-extrabold shadow-md text-sm">
-                ${{isSuper ? 'HQ' : 'EB'}}
+          <aside class="${{state.sidebarOpen ? 'w-64' : 'w-16'}} transition-all duration-300 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0 border-r border-slate-800 z-30">
+            <div class="p-4 flex items-center justify-between border-b border-slate-800">
+              <div class="flex items-center gap-3 cursor-pointer overflow-hidden ${{state.sidebarOpen ? '' : 'hidden'}}" onclick="navigate('${{isSuper ? 'admin_hq' : 'dashboard'}}')">
+                <div class="h-9 w-9 rounded-2xl ${{isSuper ? 'bg-amber-500' : 'bg-indigo-600'}} flex items-center justify-center text-white font-extrabold shadow-md text-xs flex-shrink-0">
+                  ${{isSuper ? 'HQ' : 'EB'}}
+                </div>
+                <div class="truncate">
+                  <span class="font-extrabold text-base text-white tracking-tight block">Easy <span class="${{isSuper ? 'text-amber-400' : 'text-indigo-400'}}">Barcode</span></span>
+                  <span class="block text-[9px] text-slate-400 font-semibold tracking-wide uppercase truncate">${{isSuper ? 'SaaS Control Hub' : 'Workspace Pro'}}</span>
+                </div>
               </div>
-              <div>
-                <span class="font-extrabold text-lg text-white tracking-tight">Easy <span class="${{isSuper ? 'text-amber-400' : 'text-indigo-400'}}">Barcode</span></span>
-                <span class="block text-[10px] text-slate-400 font-semibold tracking-wide uppercase">${{isSuper ? 'SaaS Control Hub' : 'Workspace Pro'}}</span>
-              </div>
+              <button onclick="toggleSidebar()" class="p-1.5 rounded-lg text-xs font-mono font-bold bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition ${{state.sidebarOpen ? '' : 'mx-auto'}}" title="${{state.sidebarOpen ? 'Close Panel' : 'Open Panel'}}">
+                ${{state.sidebarOpen ? '&lt;--' : '--&gt;'}}
+              </button>
             </div>
 
             <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
               ${{navItems.map(item => `
-                <button onclick="navigate('${{item.key}}')" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition ${{state.view === item.key ? (item.key === 'admin_hq' ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30' : 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30') : (item.key === 'admin_hq' ? 'text-amber-400 hover:bg-slate-800' : 'hover:bg-slate-800/80 hover:text-white')}}">
+                <button onclick="navigate('${{item.key}}')" class="w-full flex items-center ${{state.sidebarOpen ? 'gap-3 px-3.5' : 'justify-center px-0'}} py-2.5 rounded-xl text-xs font-semibold transition ${{state.view === item.key ? (item.key === 'admin_hq' ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30' : 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30') : (item.key === 'admin_hq' ? 'text-amber-400 hover:bg-slate-800' : 'hover:bg-slate-800/80 hover:text-white')}}" title="${{item.label}}">
                   <span class="text-base">${{item.icon}}</span>
-                  <span>${{item.label}}</span>
+                  ${{state.sidebarOpen ? `<span>${{item.label}}</span>` : ''}}
                 </button>
               `).join('')}}
             </nav>
 
-            <div class="p-4 border-t border-slate-800 bg-slate-950/40">
-              <div class="flex items-center justify-between">
-                <div>
-                  <div class="text-xs font-bold text-white truncate max-w-[110px]" title="${{storeName}}">${{storeName}}</div>
-                  <div class="text-[10px] text-emerald-400 font-semibold uppercase mt-0.5">${{isSuper ? '★ SaaS Master Admin' : 'Free Workspace'}}</div>
-                </div>
-                <button onclick="logout()" class="px-2.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-rose-950/60 hover:text-rose-400 text-slate-400 text-xs font-semibold flex items-center gap-1.5 transition" title="Sign Out">
-                  <span>🚪</span>
-                  <span>Log Out</span>
-                </button>
-              </div>
-              ${{!isSuper ? `` : `
-                <div class="mt-3">
-                  <button onclick="navigate('admin_hq')" class="w-full py-2 rounded-xl bg-amber-600/90 hover:bg-amber-600 text-white text-[11px] font-bold transition shadow-sm">
-                    🛡 Manage All Customers
+            ${{state.sidebarOpen ? `
+              <div class="p-4 border-t border-slate-800 bg-slate-950/40">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-xs font-bold text-white truncate max-w-[110px]" title="${{storeName}}">${{storeName}}</div>
+                    <div class="text-[10px] text-emerald-400 font-semibold uppercase mt-0.5">${{isSuper ? '★ SaaS Master Admin' : 'Free Workspace'}}</div>
+                  </div>
+                  <button onclick="logout()" class="px-2.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-rose-950/60 hover:text-rose-400 text-slate-400 text-xs font-semibold flex items-center gap-1.5 transition" title="Sign Out">
+                    <span>🚪</span>
+                    <span>Log Out</span>
                   </button>
                 </div>
-              `}}
-            </div>
+                ${{!isSuper ? `` : `
+                  <div class="mt-3">
+                    <button onclick="navigate('admin_hq')" class="w-full py-2 rounded-xl bg-amber-600/90 hover:bg-amber-600 text-white text-[11px] font-bold transition shadow-sm">
+                      🛡 Manage All Customers
+                    </button>
+                  </div>
+                `}}
+              </div>
+            ` : `
+              <div class="p-3 border-t border-slate-800 flex justify-center">
+                <button onclick="logout()" class="p-2 rounded-xl bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 text-sm" title="Sign Out">
+                  🚪
+                </button>
+              </div>
+            `}}
           </aside>
 
           <div class="flex-1 flex flex-col min-w-0 overflow-y-auto">
